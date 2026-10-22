@@ -1,0 +1,65 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{userId}/private/{documentId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+
+    match /users/{userId}/devices/{token} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+
+    match /marketplace/{listingId} {
+      allow read: if true;
+      allow create: if request.auth != null
+        && request.resource.data.sellerID == request.auth.uid
+        && request.resource.data.category in ['Vehicles', 'Spare parts']
+        && request.resource.data.payload is bytes;
+      allow update: if request.auth != null
+        && resource.data.sellerID == request.auth.uid
+        && request.resource.data.sellerID == resource.data.sellerID
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['payload', 'category'])
+        && request.resource.data.category in ['Vehicles', 'Spare parts']
+        && request.resource.data.payload is bytes;
+      allow delete: if request.auth != null
+        && resource.data.sellerID == request.auth.uid;
+    }
+
+    match /communityPosts/{postId} {
+      allow read: if true;
+      allow create: if request.auth != null
+        && request.resource.data.authorID == request.auth.uid
+        && request.resource.data.payload is bytes
+        && request.resource.data.likedBy == [];
+      allow update: if request.auth != null
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likedBy'])
+        && request.resource.data.likedBy is list
+        && (
+          (!resource.data.likedBy.hasAny([request.auth.uid])
+            && request.resource.data.likedBy.hasAll(resource.data.likedBy)
+            && request.resource.data.likedBy.hasAny([request.auth.uid])
+            && request.resource.data.likedBy.size() == resource.data.likedBy.size() + 1)
+          ||
+          (resource.data.likedBy.hasAny([request.auth.uid])
+            && resource.data.likedBy.hasAll(request.resource.data.likedBy)
+            && !request.resource.data.likedBy.hasAny([request.auth.uid])
+            && request.resource.data.likedBy.size() == resource.data.likedBy.size() - 1)
+        );
+      allow update: if request.auth != null
+        && resource.data.authorID == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['payload'])
+        && request.resource.data.payload is bytes;
+      allow delete: if request.auth != null
+        && resource.data.authorID == request.auth.uid;
+
+      match /comments/{commentId} {
+        allow read: if true;
+        allow create: if request.auth != null
+          && request.resource.data.authorID == request.auth.uid
+          && request.resource.data.payload is bytes;
+        allow delete: if request.auth != null
+          && resource.data.authorID == request.auth.uid;
+      }
+    }
+  }
+}

@@ -1,0 +1,13 @@
+# macOS
+.DS_Store
+
+# Xcode build and user-specific files
+DerivedData/
+build/
+*.xcuserstate
+**/xcuserdata/
+
+# Firebase local files
+.firebase/
+firebase-debug.log
+SmartVehicleApp/GoogleService-Info.plist
