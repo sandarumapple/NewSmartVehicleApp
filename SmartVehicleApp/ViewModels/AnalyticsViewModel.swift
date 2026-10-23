@@ -55,6 +55,16 @@ struct MileageReading: Identifiable {
     var id: Date { date }
 }
 
+struct FuelEfficiencyReading: Identifiable {
+    let date: Date
+    let mileage: Int
+    let distance: Int
+    let liters: Double
+    let kilometresPerLiter: Double
+
+    var id: String { "\(date.timeIntervalSinceReferenceDate)-\(mileage)" }
+}
+
 /// A pure projection of vehicle records. The SwiftUI view owns only selection state and rendering.
 struct AnalyticsViewModel {
     let vehicle: Vehicle?
@@ -108,6 +118,22 @@ struct AnalyticsViewModel {
     }
 
     var totalSpending: Double { periodTransactions.reduce(0) { $0 + $1.amount } }
+
+    var analysedMonthCount: Int {
+        if let months = range.monthCount { return max(1, months) }
+        guard let earliest = periodTransactions.map(\.date).min() else { return 1 }
+        let start = calendar.dateInterval(of: .month, for: earliest)?.start ?? earliest
+        let end = calendar.dateInterval(of: .month, for: now)?.start ?? now
+        return max(1, (calendar.dateComponents([.month], from: start, to: end).month ?? 0) + 1)
+    }
+
+    var averageMonthlySpending: Double {
+        totalSpending / Double(analysedMonthCount)
+    }
+
+    var estimatedAnnualSpending: Double {
+        averageMonthlySpending * 12
+    }
 
     func total(for category: AnalyticsCategory) -> Double {
         periodTransactions.filter { $0.category == category }.reduce(0) { $0 + $1.amount }
@@ -189,5 +215,43 @@ struct AnalyticsViewModel {
         guard let recordedDistance else { return "—" }
         return (totalSpending / Double(recordedDistance))
             .formatted(.currency(code: "LKR").precision(.fractionLength(2)))
+    }
+
+    var fuelEfficiencyReadings: [FuelEfficiencyReading] {
+        guard let vehicleID = vehicle?.id else { return [] }
+        let records = fuelRecords
+            .filter { $0.vehicleID == vehicleID && $0.date <= now && $0.liters > 0 }
+            .sorted {
+                if $0.date == $1.date { return $0.mileage < $1.mileage }
+                return $0.date < $1.date
+            }
+        guard records.count >= 2 else { return [] }
+
+        return zip(records, records.dropFirst()).compactMap { previous, current in
+            let distance = current.mileage - previous.mileage
+            guard distance > 0, periodStart.map({ current.date >= $0 }) ?? true else { return nil }
+            return FuelEfficiencyReading(
+                date: current.date,
+                mileage: current.mileage,
+                distance: distance,
+                liters: current.liters,
+                kilometresPerLiter: Double(distance) / current.liters
+            )
+        }
+    }
+
+    var averageFuelEfficiency: Double? {
+        let readings = fuelEfficiencyReadings
+        let liters = readings.reduce(0) { $0 + $1.liters }
+        guard liters > 0 else { return nil }
+        return Double(readings.reduce(0) { $0 + $1.distance }) / liters
+    }
+
+    var latestFuelEfficiency: Double? {
+        fuelEfficiencyReadings.last?.kilometresPerLiter
+    }
+
+    var bestFuelEfficiency: Double? {
+        fuelEfficiencyReadings.map(\.kilometresPerLiter).max()
     }
 }

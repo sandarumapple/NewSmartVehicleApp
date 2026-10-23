@@ -11,3 +11,6 @@ build/
 .firebase/
 firebase-debug.log
 SmartVehicleApp/GoogleService-Info.plist
+
+# Firebase Functions dependencies
+functions/node_modules/

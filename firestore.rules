@@ -9,18 +9,85 @@ service cloud.firestore {
       allow read, write: if request.auth != null && request.auth.uid == userId;
     }
 
+    match /users/{userId}/notifications/{notificationId} {
+      allow read, delete: if request.auth != null && request.auth.uid == userId;
+      allow update: if request.auth != null
+        && request.auth.uid == userId
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRead'])
+        && request.resource.data.isRead is bool;
+      allow create: if request.auth != null
+        && request.auth.uid != userId
+        && request.resource.data.actorID == request.auth.uid
+        && request.resource.data.recipientID == userId
+        && request.resource.data.type in ['like', 'comment']
+        && request.resource.data.actorName is string
+        && request.resource.data.actorName.size() > 0
+        && request.resource.data.actorName.size() <= 80
+        && request.resource.data.postID is string
+        && request.resource.data.sourceID is string
+        && request.resource.data.postPreview is string
+        && request.resource.data.postPreview.size() <= 160
+        && request.resource.data.isRead == false
+        && request.resource.data.createdAt == request.time
+        && exists(/databases/$(database)/documents/communityPosts/$(request.resource.data.postID))
+        && get(/databases/$(database)/documents/communityPosts/$(request.resource.data.postID)).data.authorID == userId
+        && (
+          (request.resource.data.type == 'like'
+            && get(/databases/$(database)/documents/communityPosts/$(request.resource.data.postID)).data.likedBy.hasAny([request.auth.uid]))
+          ||
+          (request.resource.data.type == 'comment'
+            && exists(/databases/$(database)/documents/communityPosts/$(request.resource.data.postID)/comments/$(request.resource.data.sourceID))
+            && get(/databases/$(database)/documents/communityPosts/$(request.resource.data.postID)/comments/$(request.resource.data.sourceID)).data.authorID == request.auth.uid)
+        );
+    }
+
     match /marketplace/{listingId} {
       allow read: if true;
       allow create: if request.auth != null
         && request.resource.data.sellerID == request.auth.uid
         && request.resource.data.category in ['Vehicles', 'Spare parts']
-        && request.resource.data.payload is bytes;
+        && request.resource.data.payload is bytes
+        && request.resource.data.payload.size() <= 900000
+        && request.resource.data.title is string
+        && request.resource.data.title.size() > 0
+        && request.resource.data.title.size() <= 100
+        && request.resource.data.subtitle is string
+        && request.resource.data.subtitle.size() > 0
+        && request.resource.data.subtitle.size() <= 500
+        && request.resource.data.priceAmount is int
+        && request.resource.data.priceAmount > 0
+        && request.resource.data.priceAmount <= 1000000000
+        && request.resource.data.contact is string
+        && request.resource.data.contact.size() > 0
+        && request.resource.data.contact.size() <= 200
+        && request.resource.data.location is string
+        && request.resource.data.location.size() > 0
+        && request.resource.data.location.size() <= 120
+        && request.resource.data.createdAt == request.time;
       allow update: if request.auth != null
         && resource.data.sellerID == request.auth.uid
         && request.resource.data.sellerID == resource.data.sellerID
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['payload', 'category'])
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'payload', 'category', 'title', 'subtitle', 'priceAmount', 'contact', 'location'
+        ])
         && request.resource.data.category in ['Vehicles', 'Spare parts']
-        && request.resource.data.payload is bytes;
+        && request.resource.data.payload is bytes
+        && request.resource.data.payload.size() <= 900000
+        && request.resource.data.title is string
+        && request.resource.data.title.size() > 0
+        && request.resource.data.title.size() <= 100
+        && request.resource.data.subtitle is string
+        && request.resource.data.subtitle.size() > 0
+        && request.resource.data.subtitle.size() <= 500
+        && request.resource.data.priceAmount is int
+        && request.resource.data.priceAmount > 0
+        && request.resource.data.priceAmount <= 1000000000
+        && request.resource.data.contact is string
+        && request.resource.data.contact.size() > 0
+        && request.resource.data.contact.size() <= 200
+        && request.resource.data.location is string
+        && request.resource.data.location.size() > 0
+        && request.resource.data.location.size() <= 120;
       allow delete: if request.auth != null
         && resource.data.sellerID == request.auth.uid;
     }
@@ -30,7 +97,21 @@ service cloud.firestore {
       allow create: if request.auth != null
         && request.resource.data.authorID == request.auth.uid
         && request.resource.data.payload is bytes
-        && request.resource.data.likedBy == [];
+        && request.resource.data.payload.size() <= 900000
+        && request.resource.data.authorName is string
+        && request.resource.data.authorName.size() > 0
+        && request.resource.data.authorName.size() <= 80
+        && (!('name' in request.auth.token)
+          || request.resource.data.authorName == request.auth.token.name)
+        && request.resource.data.text is string
+        && request.resource.data.text.size() > 0
+        && request.resource.data.text.size() <= 5000
+        && request.resource.data.category in ['Question', 'Problem', 'Solved', 'Tip']
+        && request.resource.data.vehicle is string
+        && request.resource.data.vehicle.size() <= 120
+        && request.resource.data.vehicleID is string
+        && request.resource.data.likedBy == []
+        && request.resource.data.createdAt == request.time;
       allow update: if request.auth != null
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likedBy'])
         && request.resource.data.likedBy is list
@@ -47,8 +128,18 @@ service cloud.firestore {
         );
       allow update: if request.auth != null
         && resource.data.authorID == request.auth.uid
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['payload'])
-        && request.resource.data.payload is bytes;
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'payload', 'text', 'category', 'vehicle', 'vehicleID'
+        ])
+        && request.resource.data.payload is bytes
+        && request.resource.data.payload.size() <= 900000
+        && request.resource.data.text is string
+        && request.resource.data.text.size() > 0
+        && request.resource.data.text.size() <= 5000
+        && request.resource.data.category in ['Question', 'Problem', 'Solved', 'Tip']
+        && request.resource.data.vehicle is string
+        && request.resource.data.vehicle.size() <= 120
+        && request.resource.data.vehicleID is string;
       allow delete: if request.auth != null
         && resource.data.authorID == request.auth.uid;
 
@@ -56,9 +147,21 @@ service cloud.firestore {
         allow read: if true;
         allow create: if request.auth != null
           && request.resource.data.authorID == request.auth.uid
-          && request.resource.data.payload is bytes;
+          && request.resource.data.payload is bytes
+          && request.resource.data.payload.size() <= 100000
+          && request.resource.data.authorName is string
+          && request.resource.data.authorName.size() > 0
+          && request.resource.data.authorName.size() <= 80
+          && (!('name' in request.auth.token)
+            || request.resource.data.authorName == request.auth.token.name)
+          && request.resource.data.text is string
+          && request.resource.data.text.size() > 0
+          && request.resource.data.text.size() <= 2000
+          && request.resource.data.createdAt == request.time;
         allow delete: if request.auth != null
-          && resource.data.authorID == request.auth.uid;
+          && (resource.data.authorID == request.auth.uid
+            || get(/databases/$(database)/documents/communityPosts/$(postId)).data.authorID
+              == request.auth.uid);
       }
     }
   }

@@ -7,7 +7,6 @@ import UIKit
 struct MoreView: View {
     @EnvironmentObject private var store: AppStore
     @State private var showDocumentScanner = false
-    @State private var showSignOutConfirmation = false
     private let profileBlue = Color(red: 26 / 255, green: 107 / 255, blue: 1)
     private let profileGreen = Color(red: 16 / 255, green: 185 / 255, blue: 129 / 255)
 
@@ -47,20 +46,6 @@ struct MoreView: View {
                             showDocumentScanner = true
                         }
                     }
-                    profileGroup("Preferences") {
-                        profileRow("Notifications", symbol: "bell.badge", tint: .orange) {
-                            NotificationSettingsView()
-                        }
-                        profileRow("Appearance", symbol: "circle.lefthalf.filled", tint: .purple) {
-                            AppearanceSettingsView()
-                        }
-                        profileRow("Home Screen widgets", symbol: "square.grid.2x2", tint: profileBlue) {
-                            WidgetGuideView()
-                        }
-                        profileRow("Units & region", symbol: "speedometer", tint: profileGreen) {
-                            VehiclePreferencesView()
-                        }
-                    }
                     profileGroup("Community") {
                         profileRow("My community posts", symbol: "bubble.left.and.bubble.right", tint: profileBlue) {
                             CommunityView(showMyPosts: true)
@@ -82,7 +67,12 @@ struct MoreView: View {
                     }
                 }
 
-                Button(role: .destructive) { showSignOutConfirmation = true } label: {
+                Button(role: .destructive) {
+                    Task {
+                        do { try await store.signOut() }
+                        catch { store.backendError = error.localizedDescription }
+                    }
+                } label: {
                     Label("Sign out", systemImage: "rectangle.portrait.and.arrow.right")
                         .font(.subheadline.weight(.semibold))
                         .frame(maxWidth: .infinity)
@@ -111,23 +101,15 @@ struct MoreView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 NavigationLink {
-                    AccountSettingsView()
+                    SettingsView()
                 } label: {
                     Image(systemName: "gearshape")
                 }
-                .accessibilityLabel("Account settings")
+                .accessibilityLabel("Settings")
             }
         }
         .fullScreenCover(isPresented: $showDocumentScanner) {
             NavigationStack { DocumentScannerFlow(startWithCamera: true) }
-        }
-        .confirmationDialog("Sign out of Smart Garage?", isPresented: $showSignOutConfirmation) {
-            Button("Sign out", role: .destructive) {
-                Task {
-                    do { try await store.signOut() }
-                    catch { store.backendError = error.localizedDescription }
-                }
-            }
         }
     }
 
@@ -724,11 +706,33 @@ struct AppearanceSettingsView: View {
         .onChange(of: store.appearance) { _, _ in store.persist() }
     }
 }
-struct AccountSettingsView: View {
+struct SettingsView: View {
     @EnvironmentObject private var store: AppStore
     var body: some View {
         Form {
-            Section("Signed in") {
+            Section("Preferences") {
+                NavigationLink {
+                    NotificationSettingsView()
+                } label: {
+                    Label("Notifications", systemImage: "bell.badge")
+                }
+                NavigationLink {
+                    AppearanceSettingsView()
+                } label: {
+                    Label("Appearance", systemImage: "circle.lefthalf.filled")
+                }
+                NavigationLink {
+                    WidgetGuideView()
+                } label: {
+                    Label("Home Screen widgets", systemImage: "square.grid.2x2")
+                }
+                NavigationLink {
+                    VehiclePreferencesView()
+                } label: {
+                    Label("Units & region", systemImage: "speedometer")
+                }
+            }
+            Section("Account") {
                 LabeledContent("Email", value: store.userEmail)
                 Label("Account", systemImage: "envelope.badge.shield.half.filled")
                 Text(
@@ -738,7 +742,7 @@ struct AccountSettingsView: View {
                 )
                 .font(.caption).foregroundStyle(.secondary)
             }
-            Section {
+            Section("Session") {
                 Button("Sign out", role: .destructive) {
                     Task {
                         do {
@@ -752,7 +756,7 @@ struct AccountSettingsView: View {
                 if store.isSigningOut { ProgressView("Signing out…") }
             }
         }
-        .navigationTitle("Account & sign-in").navigationBarTitleDisplayMode(.inline)
+        .navigationTitle("Settings").navigationBarTitleDisplayMode(.inline)
     }
 }
 
@@ -766,11 +770,16 @@ private extension AnalyticsCategory {
     }
 }
 
+private extension Color {
+    static let analyticsBlue = Color(red: 26 / 255, green: 107 / 255, blue: 1)
+}
+
 struct AnalyticsView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.scenePhase) private var scenePhase
     @State private var range: AnalyticsRange = .sixMonths
-    @State private var selectedCategory = "All"
+    @AppStorage("smart-vehicle-analytics-range") private var savedRange = AnalyticsRange.sixMonths.rawValue
+    @AppStorage("smart-vehicle-analytics-category") private var selectedCategory = "All"
     @State private var now = Date()
 
     private var viewModel: AnalyticsViewModel {
@@ -794,16 +803,24 @@ struct AnalyticsView: View {
     private var mileageReadings: [MileageReading] { viewModel.mileageReadings }
     private var recordedDistance: Int? { viewModel.recordedDistance }
     private var costPerKilometre: String { viewModel.costPerKilometre }
+    private var fuelEfficiencyReadings: [FuelEfficiencyReading] {
+        viewModel.fuelEfficiencyReadings
+    }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 19) {
-                ScreenHeading(title: "Analytics", subtitle: vehicle?.title ?? "Vehicle")
+                ScreenHeading(
+                    title: "Analytics",
+                    subtitle: "Costs, mileage & vehicle health at a glance"
+                )
                 if let vehicle {
                     controls
                     summary
+                    runningCostForecast
                     spendingChart
                     spendingBreakdown
+                    fuelEfficiencyChart
                     mileageChart
                     insights(for: vehicle)
                     relatedRecords
@@ -820,58 +837,224 @@ struct AnalyticsView: View {
             .frame(maxWidth: .infinity)
         }
         .background(Color.appCanvas.ignoresSafeArea()).toolbar(.hidden, for: .navigationBar)
-        .onAppear { now = Date() }
+        .onAppear {
+            now = Date()
+            range = AnalyticsRange(rawValue: savedRange) ?? .sixMonths
+        }
+        .onChange(of: range) { _, value in savedRange = value.rawValue }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { now = Date() }
         }
     }
 
     private var controls: some View {
-        HStack(spacing: 12) {
+        VStack(spacing: 12) {
+            Picker("Time range", selection: $range) {
+                ForEach(AnalyticsRange.allCases) { option in
+                    Text(option.rawValue).tag(option)
+                }
+            }
+            .pickerStyle(.segmented)
+
             Menu {
                 ForEach(store.vehicles) { car in
-                    Button(car.title) { store.selectedVehicleID = car.id }
+                    Button(car.title) {
+                        store.selectedVehicleID = car.id
+                        store.persist()
+                    }
                 }
             } label: {
-                Label(vehicle?.title ?? "Vehicle", systemImage: "car.side.fill")
-                    .font(.subheadline.weight(.semibold)).foregroundStyle(Color.appAccent)
-                    .lineLimit(1)
-            }
-            Spacer(minLength: 4)
-            Menu {
-                ForEach(AnalyticsRange.allCases) { option in
-                    Button(option.title) { range = option }
+                HStack(spacing: 12) {
+                    Image(systemName: "car.side.fill")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(Color.analyticsBlue)
+                        .frame(width: 34, height: 34)
+                        .background(Color.analyticsBlue.opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("ACTIVE VEHICLE")
+                            .font(.appBadge)
+                            .tracking(0.7)
+                            .foregroundStyle(.secondary)
+                        Text(vehicle?.title ?? "Vehicle")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                    HStack(spacing: 5) {
+                        Circle().fill(Color.appSuccess).frame(width: 6, height: 6)
+                        Text("Synced").font(.caption2.weight(.medium)).foregroundStyle(.secondary)
+                    }
+                    Image(systemName: "chevron.down")
+                        .font(.caption2.weight(.bold)).foregroundStyle(.tertiary)
                 }
-            } label: {
-                Label(range.rawValue, systemImage: "calendar")
-                    .font(.subheadline.weight(.semibold)).foregroundStyle(Color.appAccent)
+                .padding(.horizontal, 12)
+                .frame(height: 54)
+                .background(Color.appCard, in: RoundedRectangle(cornerRadius: 12))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12)
+                        .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
+                }
             }
+            .buttonStyle(.plain)
         }
         .padding(.horizontal, 20)
         .accessibilityElement(children: .contain)
     }
 
     private var summary: some View {
-        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 11) {
-            MetricTile(
-                title: "Total spending", value: compactMoney(totalSpending),
-                detail: comparisonText, symbol: "creditcard.fill", tint: .blue)
-            MetricTile(
-                title: "Recorded distance",
-                value: recordedDistance.map { "\($0.formatted()) km" } ?? "—",
-                detail: "Between readings in this range",
-                symbol: "point.bottomleft.forward.to.point.topright.scurvepath")
-            MetricTile(
-                title: "Fuel", value: compactMoney(total(for: .fuel)),
-                detail: "\(periodTransactions.filter { $0.category == .fuel }.count) fill-ups",
-                symbol: "fuelpump.fill")
-            MetricTile(
-                title: "Cost per km",
-                value: costPerKilometre,
-                detail: "Approx. from saved readings", symbol: "gauge.with.dots.needle.67",
-                tint: .orange)
+        VStack(spacing: 12) {
+            HStack(spacing: 11) {
+                analyticsMiniStat(
+                    title: "Fuel",
+                    value: compactMoney(total(for: .fuel)),
+                    detail: "\(periodTransactions.filter { $0.category == .fuel }.count) fill-ups",
+                    symbol: "fuelpump.fill",
+                    tint: .blue
+                )
+                analyticsMiniStat(
+                    title: "Maintenance",
+                    value: compactMoney(total(for: .maintenance)),
+                    detail: "\(periodTransactions.filter { $0.category == .maintenance }.count) records",
+                    symbol: "wrench.and.screwdriver.fill",
+                    tint: .green
+                )
+            }
+
+            HStack(spacing: 12) {
+                Image(systemName: "gauge.with.dots.needle.67percent")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(Color.analyticsBlue)
+                    .frame(width: 36, height: 36)
+                    .background(Color.analyticsBlue.opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Recorded distance").font(.caption).foregroundStyle(.secondary)
+                    Text(recordedDistance.map { "\($0.formatted()) km" } ?? "—")
+                        .font(.headline.weight(.bold)).monospacedDigit()
+                }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text("Cost per km").font(.caption2).foregroundStyle(.secondary)
+                    Text(costPerKilometre)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Color.analyticsBlue)
+                        .monospacedDigit()
+                }
+            }
+            .padding(12)
+            .background(Color.appCard, in: RoundedRectangle(cornerRadius: 12))
+
+            totalSpendHero
         }
         .padding(.horizontal, 20)
+    }
+
+    private var totalSpendHero: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("TOTAL SPEND", systemImage: "creditcard.fill")
+                    .font(.caption2.weight(.bold))
+                    .tracking(0.8)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(comparisonText)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(comparisonTint)
+                    .padding(.horizontal, 9).padding(.vertical, 5)
+                    .background(comparisonTint.opacity(0.12), in: Capsule())
+            }
+            Text(money(totalSpending))
+                .font(.largeTitle.bold())
+                .tracking(-1)
+                .minimumScaleFactor(0.7)
+                .lineLimit(1)
+                .monospacedDigit()
+            HStack {
+                Text(range.title)
+                Spacer()
+                Text("\(periodTransactions.count) transactions")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .padding(16)
+        .background {
+            ZStack(alignment: .bottomTrailing) {
+                Color.appCard
+                Circle()
+                    .fill(Color.analyticsBlue.opacity(0.14))
+                    .frame(width: 150, height: 150)
+                    .blur(radius: 24)
+                    .offset(x: 45, y: 70)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.analyticsBlue.opacity(0.18), lineWidth: 1)
+        }
+    }
+
+    private var comparisonTint: Color {
+        if comparisonText.hasPrefix("Down") { return .green }
+        if comparisonText.hasPrefix("Up") { return .orange }
+        return .secondary
+    }
+
+    private var runningCostForecast: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Running cost forecast").font(.subheadline.bold())
+                Spacer()
+                Text("Based on \(range.title.lowercased())")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            HStack(spacing: 11) {
+                analyticsMiniStat(
+                    title: "Monthly average",
+                    value: compactMoney(viewModel.averageMonthlySpending),
+                    detail: "Average running cost",
+                    symbol: "calendar",
+                    tint: .blue
+                )
+                analyticsMiniStat(
+                    title: "Annual estimate",
+                    value: compactMoney(viewModel.estimatedAnnualSpending),
+                    detail: "At the current average",
+                    symbol: "calendar.badge.clock",
+                    tint: .purple
+                )
+            }
+        }
+        .padding(.horizontal, 20)
+    }
+
+    private func analyticsMiniStat(
+        title: String, value: String, detail: String, symbol: String, tint: Color
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(title.uppercased())
+                    .font(.appBadge)
+                    .tracking(0.6)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Image(systemName: symbol).font(.caption.weight(.semibold)).foregroundStyle(tint)
+            }
+            Text(value)
+                .font(.headline.weight(.bold))
+                .minimumScaleFactor(0.72)
+                .lineLimit(1)
+                .monospacedDigit()
+            Text(detail).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            Capsule().fill(tint.opacity(0.18)).frame(height: 4)
+                .overlay(alignment: .leading) {
+                    Capsule().fill(tint).frame(width: 48, height: 4)
+                }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(Color.appCard, in: RoundedRectangle(cornerRadius: 12))
     }
 
     private var spendingChart: some View {
@@ -895,11 +1078,30 @@ struct AnalyticsView: View {
                     chartEmptyState("No spending recorded for this selection.")
                 } else {
                     Chart(spendingBuckets) { bucket in
-                        BarMark(
+                        AreaMark(
                             x: .value("Period", bucket.date),
                             y: .value("Amount", bucket.amount)
                         )
-                        .foregroundStyle(Color.appAccent).cornerRadius(4)
+                        .foregroundStyle(
+                            LinearGradient(
+                                colors: [Color.analyticsBlue.opacity(0.28), Color.analyticsBlue.opacity(0.02)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                        .interpolationMethod(.catmullRom)
+                        LineMark(
+                            x: .value("Period", bucket.date),
+                            y: .value("Amount", bucket.amount)
+                        )
+                        .foregroundStyle(Color.analyticsBlue)
+                        .lineStyle(StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
+                        .interpolationMethod(.catmullRom)
+                        PointMark(
+                            x: .value("Period", bucket.date),
+                            y: .value("Amount", bucket.amount)
+                        )
+                        .foregroundStyle(Color.analyticsBlue)
                     }
                     .frame(height: 220)
                 }
@@ -977,6 +1179,70 @@ struct AnalyticsView: View {
             }
         }
         .padding(.horizontal, 20)
+    }
+
+    private var fuelEfficiencyChart: some View {
+        SurfaceCard {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Estimated fuel efficiency").font(.subheadline.bold())
+                        Text("Calculated between consecutive fill-ups")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Image(systemName: "leaf.fill")
+                        .foregroundStyle(Color.appSuccess)
+                        .frame(width: 34, height: 34)
+                        .background(Color.appSuccess.opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
+                }
+
+                HStack(spacing: 8) {
+                    efficiencyStat("AVERAGE", value: viewModel.averageFuelEfficiency)
+                    efficiencyStat("LATEST", value: viewModel.latestFuelEfficiency)
+                    efficiencyStat("BEST", value: viewModel.bestFuelEfficiency)
+                }
+
+                if fuelEfficiencyReadings.isEmpty {
+                    chartEmptyState(
+                        "Add at least two fuel records with increasing odometer readings to estimate efficiency."
+                    )
+                } else {
+                    Chart(fuelEfficiencyReadings) { reading in
+                        LineMark(
+                            x: .value("Date", reading.date),
+                            y: .value("Efficiency", reading.kilometresPerLiter)
+                        )
+                        .foregroundStyle(Color.appSuccess)
+                        .lineStyle(StrokeStyle(lineWidth: 3, lineCap: .round))
+                        .interpolationMethod(.catmullRom)
+                        PointMark(
+                            x: .value("Date", reading.date),
+                            y: .value("Efficiency", reading.kilometresPerLiter)
+                        )
+                        .foregroundStyle(Color.appSuccess)
+                    }
+                    .chartYAxisLabel("km/L")
+                    .frame(height: 190)
+                }
+
+                Text("This is an estimate; partial fill-ups can affect the result.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 20)
+    }
+
+    private func efficiencyStat(_ title: String, value: Double?) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.appBadge).foregroundStyle(.secondary)
+            Text(value.map { String(format: "%.1f", $0) } ?? "—")
+                .font(.headline.bold()).monospacedDigit()
+            Text("km/L").font(.caption2).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(Color.appElevated, in: RoundedRectangle(cornerRadius: 10))
     }
 
     private func chartEmptyState(_ message: String) -> some View {

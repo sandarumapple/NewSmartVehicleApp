@@ -29,6 +29,8 @@ final class AppStore: ObservableObject {
     @Published var expenses: [ExpenseRecord] = []
     @Published var documents: [VehicleDocument] = []
     @Published var posts: [CommunityPost] = []
+    @Published private(set) var communityNotifications: [CommunityNotification] = []
+    @Published private(set) var communityNotificationError: String?
     @Published var isAuthenticated = false
     @Published var biometricEnabled = false
     @Published private(set) var biometricUnlocked = false
@@ -51,11 +53,15 @@ final class AppStore: ObservableObject {
     @Published var onboardingCompleted = true
     @Published var isRestoringSession = false
     @Published var marketplaceItems: [MarketplaceItem] = []
+    @Published private(set) var savedMarketplaceItemIDs: Set<UUID> = []
+    @Published private(set) var localCommentsByPostID: [UUID: [CommunityComment]] = [:]
+    @Published private(set) var pendingLikePostIDs: Set<UUID> = []
     @Published var backendError: String?
     @Published private(set) var notificationPermissionState: NotificationPermissionState = .notDetermined
     @Published private(set) var pushRegistrationError: String?
     @Published private(set) var isPushRegistered = false
     @Published private(set) var pushInstallationID: String?
+    @Published private(set) var undoMessage: String?
 
     var isFirebaseConfigured: Bool { dependencies.remote.isConfigured }
     var currentUserID: String? {
@@ -67,6 +73,7 @@ final class AppStore: ObservableObject {
     private var profilePhotoListener: ObservationToken?
     private var marketplaceListener: ObservationToken?
     private var postsListener: ObservationToken?
+    private var communityNotificationsListener: ObservationToken?
     private var pushObservers: [NSObjectProtocol] = []
     private var pushLifecycleTask: Task<Void, Never>?
     private var pushRegistrationSaveTask: Task<Void, Never>?
@@ -81,6 +88,9 @@ final class AppStore: ObservableObject {
     private var biometricLockGeneration = 0
     private var requestedPhotoIDs: Set<String> = []
     private var photoRevisions: [String: Int] = [:]
+    private var undoTask: Task<Void, Never>?
+    private var undoAction: (() -> Void)?
+    private var undoCommit: (() -> Void)?
 
     var selectedVehicle: Vehicle? {
         get {
@@ -109,6 +119,9 @@ final class AppStore: ObservableObject {
         let otherExpenses = selectedExpenses.reduce(0) { $0 + $1.amount }
         let maintenanceCosts = selectedVehicleRecords.reduce(0) { $0 + $1.cost }
         return totalFuel + otherExpenses + maintenanceCosts
+    }
+    var unreadCommunityNotificationCount: Int {
+        communityNotifications.lazy.filter { !$0.isRead }.count
     }
 
     init(dependencies: AppDependencies) {
@@ -167,11 +180,70 @@ final class AppStore: ObservableObject {
             }
         }
         authListener = dependencies.authentication.observeChanges { [weak self] user in
-                Task { @MainActor in self?.handleAuthChange(user) }
-            }
+            Task { @MainActor in self?.handleAuthChange(user) }
+        }
+    }
+
+    func retryCloudSync() {
+        backendError = nil
+        guard isAuthenticated else { return }
+        persist()
+    }
+
+    func continueWithCachedData() {
+        isRestoringSession = false
+    }
+
+    func undoLastChange() {
+        undoTask?.cancel()
+        undoTask = nil
+        let action = undoAction
+        undoAction = nil
+        undoCommit = nil
+        undoMessage = nil
+        action?()
+    }
+
+    func dismissUndo() {
+        commitPendingUndo()
+    }
+
+    private func stageUndo(
+        message: String,
+        undo: @escaping () -> Void,
+        commit: @escaping () -> Void = {}
+    ) {
+        commitPendingUndo()
+        undoMessage = message
+        undoAction = undo
+        undoCommit = commit
+        undoTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(5))
+            guard !Task.isCancelled else { return }
+            self?.commitPendingUndo()
+        }
+    }
+
+    private func commitPendingUndo() {
+        undoTask?.cancel()
+        undoTask = nil
+        let commit = undoCommit
+        undoAction = nil
+        undoCommit = nil
+        undoMessage = nil
+        commit?()
     }
 
     private func handleAuthChange(_ user: SessionUser?) {
+        if let user, user.requiresEmailVerification, !user.isEmailVerified {
+            // Firebase briefly publishes newly-created/unverified password users.
+            // Never allow that transient state to unlock the app.
+            try? dependencies.authentication.signOut()
+            activeUserID = nil
+            isAuthenticated = false
+            isRestoringSession = false
+            return
+        }
         if user?.id == activeUserID && !(user == nil && isRestoringSession) {
             return
         }
@@ -181,6 +253,8 @@ final class AppStore: ObservableObject {
         profilePhotoListener = nil
         postsListener?.cancel()
         postsListener = nil
+        communityNotificationsListener?.cancel()
+        communityNotificationsListener = nil
         pendingSave?.cancel()
         hasUnsavedChanges = false
         activeUserID = user?.id
@@ -194,6 +268,23 @@ final class AppStore: ObservableObject {
                     switch result {
                     case .success(let posts): self.posts = posts
                     case .failure(let error): self.backendError = error.localizedDescription
+                    }
+                }
+            }
+            communityNotificationsListener = dependencies.remote.observeCommunityNotifications(
+                userID: user.id
+            ) { [weak self] result in
+                Task { @MainActor in
+                    guard let self, self.activeUserID == user.id else { return }
+                    switch result {
+                    case .success(let notifications):
+                        self.communityNotifications = notifications
+                        self.communityNotificationError = nil
+                    case .failure:
+                        // Community alerts are optional and must not block the garage UI when
+                        // notification rules have not been deployed yet.
+                        self.communityNotificationError =
+                            "Community notifications are temporarily unavailable."
                     }
                 }
             }
@@ -257,6 +348,11 @@ final class AppStore: ObservableObject {
         expenses = []
         documents = []
         posts = []
+        communityNotifications = []
+        communityNotificationError = nil
+        savedMarketplaceItemIDs = []
+        localCommentsByPostID = [:]
+        pendingLikePostIDs = []
         userName = ""
         userEmail = ""
         userPhone = ""
@@ -288,6 +384,8 @@ final class AppStore: ObservableObject {
         expenses = state.expenses
         documents = state.documents
         if !isFirebaseConfigured { posts = state.posts }
+        savedMarketplaceItemIDs = state.savedMarketplaceItemIDs ?? []
+        localCommentsByPostID = state.localCommentsByPostID ?? [:]
         userName = state.userName
         userEmail = state.userEmail
         userPhone = state.userPhone ?? ""
@@ -342,6 +440,20 @@ final class AppStore: ObservableObject {
         vehicles[index].mileage = reading
     }
 
+    func odometerWarning(vehicleID: UUID, reading: Int) -> String? {
+        guard let currentMileage = vehicles.first(where: { $0.id == vehicleID })?.mileage,
+            reading < currentMileage
+        else { return nil }
+        return "This is below the current reading of \(currentMileage.formatted()) km. It will be saved as a historical record and will not reduce the vehicle mileage."
+    }
+
+    func highestRecordedMileage(vehicleID: UUID) -> Int {
+        let readings = maintenance.filter { $0.vehicleID == vehicleID }.map(\.mileage)
+            + fuelRecords.filter { $0.vehicleID == vehicleID }.map(\.mileage)
+            + expenses.filter { $0.vehicleID == vehicleID }.map(\.mileage)
+        return readings.max() ?? 0
+    }
+
     private func writeLocalCache(_ data: Data, userID: String) {
         dependencies.local.set(data, forKey: "smart-vehicle-store-\(userID)")
         dependencies.local.set(data, forKey: "smart-vehicle-store")
@@ -360,39 +472,31 @@ final class AppStore: ObservableObject {
     }
 
     func register(email: String, password: String, name: String) async throws {
-        if isFirebaseConfigured {
-            pendingRegistrationName = name
-            do {
-                let user = try await dependencies.authentication.register(
-                    email: email, password: password, name: name)
-                handleAuthChange(user)
-                userName = name
-                userEmail = email
-                persist()
-                pendingRegistrationName = nil
-            } catch {
-                pendingRegistrationName = nil
-                throw error
-            }
-        } else {
-            userName = name
-            userEmail = email
-            onboardingCompleted = false
-            isAuthenticated = true
-            refreshPhotos()
-            persist()
-        }
+        guard isFirebaseConfigured else { throw BackendError.authenticationUnavailable }
+        pendingRegistrationName = name
+        defer { pendingRegistrationName = nil }
+        try await dependencies.authentication.register(
+            email: email, password: password, name: name)
     }
 
     func signIn(email: String, password: String) async throws {
-        if isFirebaseConfigured {
-            try await dependencies.authentication.signIn(email: email, password: password)
-        } else {
-            userEmail = email
-            isAuthenticated = true
-            refreshPhotos()
-            persist()
-        }
+        guard isFirebaseConfigured else { throw BackendError.authenticationUnavailable }
+        try await dependencies.authentication.signIn(email: email, password: password)
+    }
+
+    func sendPasswordReset(email: String) async throws {
+        guard isFirebaseConfigured else { throw BackendError.authenticationUnavailable }
+        try await dependencies.authentication.sendPasswordReset(email: email)
+    }
+
+    func continueInDemoMode() {
+        guard !isFirebaseConfigured else { return }
+        userName = "Demo Driver"
+        userEmail = "demo@local"
+        onboardingCompleted = false
+        isAuthenticated = true
+        refreshPhotos()
+        persist()
     }
 
     func signInWithGoogle() async throws {
@@ -410,6 +514,7 @@ final class AppStore: ObservableObject {
     }
 
     func signOut() async throws {
+        commitPendingUndo()
         lockBiometricSession()
         if isFirebaseConfigured {
             isSigningOut = true
@@ -718,6 +823,19 @@ final class AppStore: ObservableObject {
         activeUserID != nil && item.sellerID == activeUserID
     }
 
+    func isListingSaved(_ item: MarketplaceItem) -> Bool {
+        savedMarketplaceItemIDs.contains(item.id)
+    }
+
+    func toggleSavedListing(_ item: MarketplaceItem) {
+        if savedMarketplaceItemIDs.contains(item.id) {
+            savedMarketplaceItemIDs.remove(item.id)
+        } else {
+            savedMarketplaceItemIDs.insert(item.id)
+        }
+        persist()
+    }
+
     func updateListing(_ item: MarketplaceItem) async throws {
         guard let userID = activeUserID else { throw BackendError.signInRequired }
         guard canDeleteListing(item) else { throw BackendError.notOwner }
@@ -729,6 +847,8 @@ final class AppStore: ObservableObject {
         guard let userID = activeUserID else { throw BackendError.signInRequired }
         guard item.sellerID == userID else { throw BackendError.notOwner }
         try await dependencies.remote.deleteListing(id: item.id, userID: userID)
+        savedMarketplaceItemIDs.remove(item.id)
+        persist()
         showSuccess = "Listing deleted"
     }
 
@@ -830,6 +950,8 @@ final class AppStore: ObservableObject {
             expenses = state.expenses
             documents = state.documents
             posts = state.posts
+            savedMarketplaceItemIDs = state.savedMarketplaceItemIDs ?? []
+            localCommentsByPostID = state.localCommentsByPostID ?? [:]
             userName = state.userName
             userEmail = state.userEmail
             userPhone = state.userPhone ?? ""
@@ -862,6 +984,8 @@ final class AppStore: ObservableObject {
             vehicles: vehicles, selectedVehicleID: selectedVehicleID, maintenance: maintenance,
             fuelRecords: fuelRecords, expenses: expenses, documents: documents,
             posts: isFirebaseConfigured ? [] : posts,
+            savedMarketplaceItemIDs: savedMarketplaceItemIDs,
+            localCommentsByPostID: isFirebaseConfigured ? [:] : localCommentsByPostID,
             userName: userName, userEmail: userEmail, userPhone: userPhone,
             userCity: userCity, userAddress: userAddress, userPostalCode: userPostalCode,
             biometricEnabled: biometricEnabled,
@@ -904,6 +1028,14 @@ final class AppStore: ObservableObject {
     func addMaintenance(_ record: MaintenanceRecord) {
         maintenance.insert(record, at: 0)
         updateVehicleMileage(vehicleID: record.vehicleID, reading: record.mileage)
+        if let index = vehicles.firstIndex(where: { $0.id == record.vehicleID }) {
+            let distance = vehicles[index].serviceMileageInterval ?? 5_000
+            let months = vehicles[index].serviceMonthInterval ?? 6
+            vehicles[index].nextServiceMileage = record.mileage + distance
+            vehicles[index].nextServiceDate = record.nextReminder
+                ?? Calendar.current.date(byAdding: .month, value: months, to: record.date)
+                ?? record.date
+        }
         persist()
         refreshLocalReminders()
         showSuccess = "Maintenance saved"
@@ -930,12 +1062,40 @@ final class AppStore: ObservableObject {
         refreshLocalReminders()
         showSuccess = "Document saved"
     }
-    func addVehicle(_ vehicle: Vehicle) {
+    func hasDuplicateVehicle(
+        registration: String,
+        vin: String = "",
+        excluding vehicleID: UUID? = nil
+    ) -> Bool {
+        let normalizedRegistration = normalizedVehicleIdentifier(registration)
+        let normalizedVIN = normalizedVehicleIdentifier(vin)
+
+        return vehicles.contains { vehicle in
+            guard vehicle.id != vehicleID else { return false }
+            let registrationMatches = !normalizedRegistration.isEmpty
+                && normalizedVehicleIdentifier(vehicle.registration) == normalizedRegistration
+            let vinMatches = !normalizedVIN.isEmpty
+                && normalizedVehicleIdentifier(vehicle.vin) == normalizedVIN
+            return registrationMatches || vinMatches
+        }
+    }
+
+    @discardableResult
+    func addVehicle(_ vehicle: Vehicle) -> Bool {
+        guard !hasDuplicateVehicle(registration: vehicle.registration, vin: vehicle.vin) else {
+            backendError = "This vehicle is already in your garage."
+            return false
+        }
         vehicles.append(vehicle)
         selectedVehicleID = vehicle.id
         persist()
         refreshLocalReminders()
         showSuccess = "Vehicle added"
+        return true
+    }
+
+    private func normalizedVehicleIdentifier(_ value: String) -> String {
+        value.uppercased().filter { $0.isLetter || $0.isNumber }
     }
     func updateVehicle(_ vehicle: Vehicle) {
         if let index = vehicles.firstIndex(where: { $0.id == vehicle.id }) {
@@ -945,16 +1105,180 @@ final class AppStore: ObservableObject {
         persist()
         refreshLocalReminders()
     }
+    func deleteVehicle(_ vehicle: Vehicle) {
+        guard vehicles.contains(where: { $0.id == vehicle.id }) else { return }
+
+        let vehicleID = vehicle.id
+        let previousSelectedVehicleID = selectedVehicleID
+        let vehicleIndex = vehicles.firstIndex(where: { $0.id == vehicleID }) ?? vehicles.endIndex
+        let relatedMaintenance = maintenance.filter { $0.vehicleID == vehicleID }
+        let relatedFuel = fuelRecords.filter { $0.vehicleID == vehicleID }
+        let relatedExpenses = expenses.filter { $0.vehicleID == vehicleID }
+        let relatedDocuments = documents.filter { $0.vehicleID == vehicleID }
+        let vehiclePhoto = vehiclePhotos[vehicleID]
+        let receiptPhotos = Dictionary(
+            uniqueKeysWithValues: relatedExpenses.compactMap { expense in
+                expenseReceiptPhotos[expense.id].map { (expense.id, $0) }
+            })
+        let photoIDs = [vehiclePhotoID(vehicleID)]
+            + relatedExpenses.map { expenseReceiptPhotoID($0.id) }
+
+        vehicles.removeAll { $0.id == vehicleID }
+        maintenance.removeAll { $0.vehicleID == vehicleID }
+        fuelRecords.removeAll { $0.vehicleID == vehicleID }
+        expenses.removeAll { $0.vehicleID == vehicleID }
+        documents.removeAll { $0.vehicleID == vehicleID }
+        vehiclePhotos.removeValue(forKey: vehicleID)
+        for expense in relatedExpenses {
+            expenseReceiptPhotos.removeValue(forKey: expense.id)
+        }
+
+        if selectedVehicleID == vehicleID
+            || !vehicles.contains(where: { $0.id == selectedVehicleID })
+        {
+            selectedVehicleID = vehicles.first?.id
+        }
+        persist()
+        refreshLocalReminders()
+        stageUndo(
+            message: "Vehicle deleted",
+            undo: { [weak self] in
+                guard let self else { return }
+                let insertionIndex = min(vehicleIndex, self.vehicles.endIndex)
+                self.vehicles.insert(vehicle, at: insertionIndex)
+                self.maintenance.append(contentsOf: relatedMaintenance)
+                self.fuelRecords.append(contentsOf: relatedFuel)
+                self.expenses.append(contentsOf: relatedExpenses)
+                self.documents.append(contentsOf: relatedDocuments)
+                if let vehiclePhoto { self.vehiclePhotos[vehicleID] = vehiclePhoto }
+                for (id, photo) in receiptPhotos { self.expenseReceiptPhotos[id] = photo }
+                self.selectedVehicleID = previousSelectedVehicleID ?? vehicleID
+                self.persist()
+                self.refreshLocalReminders()
+                self.showSuccess = "Vehicle restored"
+            },
+            commit: { [weak self] in
+                guard let self else { return }
+                for photoID in photoIDs {
+                    try? self.deleteCachedPhoto(photoID: photoID)
+                    self.photoRevisions[photoID, default: 0] += 1
+                    self.requestedPhotoIDs.remove(photoID)
+                    self.deleteRemotePhoto(photoID: photoID)
+                }
+                for document in relatedDocuments {
+                    try? self.dependencies.photoFiles.deleteScanPages(
+                        ownerID: self.activeUserID, documentID: document.id)
+                }
+            }
+        )
+    }
+
+    func deleteMaintenance(_ record: MaintenanceRecord) {
+        guard maintenance.contains(where: { $0.id == record.id }) else { return }
+        maintenance.removeAll { $0.id == record.id }
+        persist()
+        refreshLocalReminders()
+        stageUndo(message: "Maintenance record deleted") { [weak self] in
+            guard let self, !self.maintenance.contains(where: { $0.id == record.id }) else { return }
+            self.maintenance.append(record)
+            self.persist()
+            self.refreshLocalReminders()
+            self.showSuccess = "Maintenance record restored"
+        }
+    }
+
+    func deleteFuelRecord(_ record: FuelRecord) {
+        guard fuelRecords.contains(where: { $0.id == record.id }) else { return }
+        fuelRecords.removeAll { $0.id == record.id }
+        persist()
+        stageUndo(message: "Fuel record deleted") { [weak self] in
+            guard let self, !self.fuelRecords.contains(where: { $0.id == record.id }) else { return }
+            self.fuelRecords.append(record)
+            self.persist()
+            self.showSuccess = "Fuel record restored"
+        }
+    }
+
+    func deleteExpense(_ record: ExpenseRecord) {
+        guard expenses.contains(where: { $0.id == record.id }) else { return }
+        let receiptPhoto = expenseReceiptPhotos[record.id]
+        let photoID = expenseReceiptPhotoID(record.id)
+        expenses.removeAll { $0.id == record.id }
+        expenseReceiptPhotos.removeValue(forKey: record.id)
+        persist()
+        stageUndo(
+            message: "Expense deleted",
+            undo: { [weak self] in
+                guard let self, !self.expenses.contains(where: { $0.id == record.id }) else { return }
+                self.expenses.append(record)
+                if let receiptPhoto { self.expenseReceiptPhotos[record.id] = receiptPhoto }
+                self.persist()
+                self.showSuccess = "Expense restored"
+            },
+            commit: { [weak self] in
+                guard let self else { return }
+                try? self.deleteCachedPhoto(photoID: photoID)
+                self.photoRevisions[photoID, default: 0] += 1
+                self.requestedPhotoIDs.remove(photoID)
+                self.deleteRemotePhoto(photoID: photoID)
+            }
+        )
+    }
+
+    func deleteDocument(_ document: VehicleDocument) {
+        guard documents.contains(where: { $0.id == document.id }) else { return }
+        documents.removeAll { $0.id == document.id }
+        persist()
+        refreshLocalReminders()
+        stageUndo(
+            message: "Document deleted",
+            undo: { [weak self] in
+                guard let self, !self.documents.contains(where: { $0.id == document.id }) else {
+                    return
+                }
+                self.documents.append(document)
+                self.persist()
+                self.refreshLocalReminders()
+                self.showSuccess = "Document restored"
+            },
+            commit: { [weak self] in
+                guard let self else { return }
+                try? self.dependencies.photoFiles.deleteScanPages(
+                    ownerID: self.activeUserID, documentID: document.id)
+            }
+        )
+    }
     func toggleLike(_ post: CommunityPost) {
+        guard !pendingLikePostIDs.contains(post.id) else { return }
         if isFirebaseConfigured {
             guard let userID = activeUserID else { return }
-            Task { [remote = dependencies.remote] in
+            let shouldLike = !post.isLiked
+            pendingLikePostIDs.insert(post.id)
+            if let index = posts.firstIndex(where: { $0.id == post.id }) {
+                posts[index].isLiked = shouldLike
+                posts[index].likes = max(0, posts[index].likes + (shouldLike ? 1 : -1))
+            }
+            Task { [weak self, remote = dependencies.remote] in
                 do {
-                    try await remote.setPostLiked(
-                        !post.isLiked, postID: post.id, userID: userID)
+                    try await remote.setPostLiked(shouldLike, postID: post.id, userID: userID)
+                    if shouldLike, let recipientID = post.authorID, recipientID != userID {
+                        let notification = CommunityNotification(
+                            id: "like.\(post.id.uuidString).\(userID)",
+                            type: "like", actorName: self?.userName ?? "A driver",
+                            postID: post.id, postPreview: post.text,
+                            createdAt: Date(), isRead: false)
+                        try? await remote.publishCommunityNotification(
+                            notification, recipientID: recipientID, actorID: userID)
+                    }
                 } catch {
-                    backendError = error.localizedDescription
+                    guard let self else { return }
+                    if let index = self.posts.firstIndex(where: { $0.id == post.id }) {
+                        self.posts[index].isLiked = post.isLiked
+                        self.posts[index].likes = post.likes
+                    }
+                    self.backendError = error.localizedDescription
                 }
+                self?.pendingLikePostIDs.remove(post.id)
             }
             return
         }
@@ -964,6 +1288,8 @@ final class AppStore: ObservableObject {
         persist()
     }
     func addPost(_ post: CommunityPost) async throws {
+        var post = post
+        post.createdAt = post.createdAt ?? Date()
         if isFirebaseConfigured {
             guard let userID = activeUserID else { throw BackendError.signInRequired }
             var publishedPost = post
@@ -1003,14 +1329,75 @@ final class AppStore: ObservableObject {
             try await dependencies.remote.deletePost(id: post.id, userID: userID)
         } else {
             posts.removeAll { $0.id == post.id }
+            localCommentsByPostID.removeValue(forKey: post.id)
             persist()
         }
         showSuccess = "Post deleted"
     }
 
     func publishComment(_ comment: CommunityComment, postID: UUID) async throws {
-        guard let userID = activeUserID else { throw BackendError.signInRequired }
-        try await dependencies.remote.publishComment(comment, postID: postID, userID: userID)
+        guard let userID = currentUserID else { throw BackendError.signInRequired }
+        var comment = comment
+        comment.authorID = userID
+        comment.createdAt = comment.createdAt ?? Date()
+        if isFirebaseConfigured {
+            try await dependencies.remote.publishComment(comment, postID: postID, userID: userID)
+            if let post = posts.first(where: { $0.id == postID }),
+                let recipientID = post.authorID, recipientID != userID
+            {
+                let notification = CommunityNotification(
+                    id: "comment.\(comment.id.uuidString)", type: "comment",
+                    actorName: userName, postID: postID, postPreview: post.text,
+                    createdAt: Date(), isRead: false)
+                try? await dependencies.remote.publishCommunityNotification(
+                    notification, recipientID: recipientID, actorID: userID)
+            }
+        } else {
+            localCommentsByPostID[postID, default: []].append(comment)
+            if let index = posts.firstIndex(where: { $0.id == postID }) {
+                posts[index].comments = localCommentsByPostID[postID]?.count ?? 0
+            }
+            persist()
+        }
+    }
+
+    func comments(for postID: UUID) -> [CommunityComment] {
+        localCommentsByPostID[postID] ?? []
+    }
+
+    func markCommunityNotificationRead(_ notification: CommunityNotification) {
+        guard !notification.isRead else { return }
+        if let index = communityNotifications.firstIndex(where: { $0.id == notification.id }) {
+            communityNotifications[index].isRead = true
+        }
+        guard isFirebaseConfigured, let userID = activeUserID else { return }
+        Task { [weak self, remote = dependencies.remote] in
+            do {
+                try await remote.markCommunityNotificationRead(
+                    id: notification.id, userID: userID)
+            } catch {
+                self?.backendError = error.localizedDescription
+            }
+        }
+    }
+
+    func canDeleteComment(_ comment: CommunityComment) -> Bool {
+        comment.authorID == currentUserID
+    }
+
+    func deleteComment(_ comment: CommunityComment, postID: UUID) async throws {
+        guard let userID = currentUserID else { throw BackendError.signInRequired }
+        guard canDeleteComment(comment) else { throw BackendError.notOwner }
+        if isFirebaseConfigured {
+            try await dependencies.remote.deleteComment(
+                id: comment.id, postID: postID, userID: userID)
+        } else {
+            localCommentsByPostID[postID]?.removeAll { $0.id == comment.id }
+            if let index = posts.firstIndex(where: { $0.id == postID }) {
+                posts[index].comments = localCommentsByPostID[postID]?.count ?? 0
+            }
+            persist()
+        }
     }
 
     func observeComments(
@@ -1264,6 +1651,8 @@ private struct StoreState: Codable {
     var expenses: [ExpenseRecord]
     var documents: [VehicleDocument]
     var posts: [CommunityPost]
+    var savedMarketplaceItemIDs: Set<UUID>?
+    var localCommentsByPostID: [UUID: [CommunityComment]]?
     var userName: String
     var userEmail: String
     var userPhone: String?
@@ -1284,12 +1673,15 @@ enum BackendError: LocalizedError {
     case signInRequired
     case appleTokenMissing
     case notOwner
+    case authenticationUnavailable
 
     var errorDescription: String? {
         switch self {
         case .signInRequired: "Sign in before posting a listing."
         case .appleTokenMissing: "Apple sign-in did not return an identity token. Try again."
         case .notOwner: "Only the person who published this item can edit or delete it."
+        case .authenticationUnavailable:
+            "Account services are unavailable because Firebase is not configured."
         }
     }
 }

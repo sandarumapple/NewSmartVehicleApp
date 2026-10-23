@@ -8,79 +8,162 @@ struct DocumentsView: View {
     @EnvironmentObject private var store: AppStore
     var vehicleID: UUID? = nil
     @State private var showScanner = false
-    @State private var filter = "All"
+    @AppStorage("smart-vehicle-document-filter") private var filter = "All"
+    @State private var searchText = ""
     @State private var selectedVehicleID: UUID?
     private var vehicle: Vehicle? {
         store.vehicles.first(where: { $0.id == (vehicleID ?? selectedVehicleID) })
     }
-    private var documents: [VehicleDocument] {
+    private var vehicleDocuments: [VehicleDocument] {
         let targetID = vehicleID ?? selectedVehicleID
-        let vehicleDocuments = store.documents.filter {
+        return store.documents.filter {
             targetID == nil || $0.vehicleID == targetID
         }
-        return filter == "All"
-            ? vehicleDocuments : vehicleDocuments.filter { $0.status == filter }
+    }
+    private var documents: [VehicleDocument] {
+        vehicleDocuments.filter { document in
+            let matchesFilter = filter == "All" || document.status == filter
+            let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let matchesSearch = query.isEmpty
+                || document.type.localizedCaseInsensitiveContains(query)
+                || document.number.localizedCaseInsensitiveContains(query)
+                || document.registration.localizedCaseInsensitiveContains(query)
+            return matchesFilter && matchesSearch
+        }
+        .sorted { $0.expiryDate < $1.expiryDate }
+    }
+    private func count(for status: String) -> Int {
+        status == "All"
+            ? vehicleDocuments.count
+            : vehicleDocuments.filter { $0.status == status }.count
     }
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                ScreenHeading(
-                    title: "Documents",
-                    subtitle: vehicle?.registration ?? "All your vehicles")
+            VStack(alignment: .leading, spacing: 18) {
                 if vehicleID == nil {
-                    Picker("Vehicle", selection: $selectedVehicleID) {
-                        Text("All vehicles").tag(UUID?.none)
+                    Menu {
+                        Button("All vehicles") { selectedVehicleID = nil }
                         ForEach(store.vehicles) { item in
-                            Text(item.title).tag(Optional(item.id))
+                            Button(item.title) { selectedVehicleID = item.id }
                         }
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: "car.fill")
+                                .foregroundStyle(Color.appAccent)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(vehicle?.title ?? "All vehicles")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(.primary)
+                                Text(vehicle?.registration ?? "Documents across your garage")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.caption2.bold()).foregroundStyle(.secondary)
+                        }
+                        .padding(12)
+                        .background(Color.appCard, in: RoundedRectangle(cornerRadius: 13))
                     }
-                    .pickerStyle(.menu).padding(.horizontal, 20)
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 20)
                 }
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("Documents").font(.appScreenTitle)
+                        Text("Keep every vehicle document organised and ready.")
+                            .font(.subheadline).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Label("SECURE", systemImage: "lock.fill")
+                        .font(.caption2.weight(.bold)).tracking(0.6)
+                        .foregroundStyle(Color.appSuccess)
+                        .padding(.horizontal, 9).padding(.vertical, 6)
+                        .background(Color.appSuccess.opacity(0.1), in: Capsule())
+                }
+                .padding(.horizontal, 20)
+
                 Button {
                     showScanner = true
                 } label: {
-                    SurfaceCard {
-                        HStack(spacing: 12) {
-                            Image(systemName: "doc.viewfinder").font(.system(size: 23))
-                                .foregroundStyle(Color.appAccent).frame(width: 50, height: 50)
-                                .background(Color.appMint, in: RoundedRectangle(cornerRadius: 15))
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("Scan a document").font(.subheadline.bold())
-                                    .foregroundStyle(.primary)
-                                Text("Camera scan · text recognition · review")
-                                    .font(.caption).foregroundStyle(.secondary)
-                                if let target = vehicle ?? store.selectedVehicle {
-                                    Text("Add to \(target.title)")
-                                        .font(.caption2).foregroundStyle(.secondary)
-                                }
-                            }
-                            Spacer()
-                            Image(systemName: "arrow.up.right").font(.caption.bold())
-                                .foregroundStyle(Color.appAccent)
+                    Label("Add document", systemImage: "doc.viewfinder")
+                }
+                .buttonStyle(PrimaryButtonStyle())
+                .padding(.horizontal, 20)
+
+                HStack(spacing: 10) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("Search documents", text: $searchText)
+                        .textInputAutocapitalization(.never)
+                    if !searchText.isEmpty {
+                        Button { searchText = "" } label: {
+                            Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
                         }
+                        .buttonStyle(.plain)
                     }
                 }
-                .buttonStyle(.plain).padding(.horizontal, 20)
-                HStack {
-                    SectionHeading(title: "Your documents")
-                    Spacer()
-                    Menu {
+                .padding(.horizontal, 14).frame(height: 44)
+                .background(Color.appCard, in: RoundedRectangle(cornerRadius: 12))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12)
+                        .strokeBorder(Color.primary.opacity(0.06))
+                }
+                .padding(.horizontal, 20)
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
                         ForEach(["All", "Valid", "Expiring Soon", "Expired"], id: \.self) { item in
-                            Button(item) { filter = item }
+                            Button {
+                                withAnimation(.easeOut(duration: 0.18)) { filter = item }
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Text(item)
+                                    Text("\(count(for: item))")
+                                        .font(.caption2.bold())
+                                        .padding(.horizontal, 6).padding(.vertical, 2)
+                                        .background(
+                                            filter == item
+                                                ? Color.white.opacity(0.16)
+                                                : Color.primary.opacity(0.06),
+                                            in: Capsule())
+                                }
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(filter == item ? Color.appCanvas : .secondary)
+                                .padding(.horizontal, 13).padding(.vertical, 8)
+                                .background(
+                                    filter == item ? Color.appAccent : Color.appCard,
+                                    in: Capsule())
+                            }
+                            .buttonStyle(.plain)
                         }
-                    } label: {
-                        Label(filter, systemImage: "line.3.horizontal.decrease")
-                            .font(.caption.weight(.semibold)).foregroundStyle(Color.appAccent)
                     }
+                    .padding(.horizontal, 20)
+                }
+
+                HStack {
+                    Text("Your documents").font(.appSectionTitle)
+                    Spacer()
+                    Text("\(documents.count) shown")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 .padding(.horizontal, 20)
                 if documents.isEmpty {
                     EmptyStateView(
-                        symbol: "doc.text", title: "No documents yet",
-                        message:
-                            "Scan your insurance, revenue licence, or emission certificate to track expiry dates.",
-                        action: "Scan a document"
-                    ) { showScanner = true }
+                        symbol: "doc.text",
+                        title: filter == "All" && searchText.isEmpty
+                            ? "No documents yet" : "No matching documents",
+                        message: filter == "All" && searchText.isEmpty
+                            ? "Scan your insurance, revenue licence, or emission certificate to track expiry dates."
+                            : "Try clearing the current search and status filter.",
+                        action: filter == "All" && searchText.isEmpty
+                            ? "Scan a document" : "Clear filters"
+                    ) {
+                        if filter == "All" && searchText.isEmpty {
+                            showScanner = true
+                        } else {
+                            filter = "All"
+                            searchText = ""
+                        }
+                    }
                 } else {
                     LazyVStack(spacing: 10) {
                         ForEach(documents) { doc in
@@ -100,11 +183,16 @@ struct DocumentsView: View {
             .frame(maxWidth: .infinity)
         }
         .background(Color.appCanvas.ignoresSafeArea()).toolbar(.hidden, for: .navigationBar)
+        .onAppear {
+            if vehicleID == nil && selectedVehicleID == nil {
+                selectedVehicleID = store.selectedVehicle?.id
+            }
+        }
         .fullScreenCover(isPresented: $showScanner) {
             NavigationStack {
                 DocumentScannerFlow(
                     vehicleID: vehicleID ?? selectedVehicleID ?? store.selectedVehicle?.id,
-                    startWithCamera: true)
+                    startWithCamera: false)
             }
         }
     }
@@ -112,12 +200,19 @@ struct DocumentsView: View {
 
 struct DocumentRow: View {
     var document: VehicleDocument
+    private var tint: Color {
+        switch document.status {
+        case "Expired": .red
+        case "Expiring Soon": .orange
+        default: .appAccent
+        }
+    }
     var body: some View {
-        SurfaceCard(padding: 15) {
-            HStack(spacing: 13) {
-                Image(systemName: document.imageName).font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(Color.appAccent).frame(width: 45, height: 45)
-                    .background(Color.appMint, in: RoundedRectangle(cornerRadius: 14))
+        SurfaceCard(padding: 16) {
+            HStack(spacing: 14) {
+                Image(systemName: document.imageName).font(.system(size: 19, weight: .semibold))
+                    .foregroundStyle(tint).frame(width: 48, height: 48)
+                    .background(tint.opacity(0.11), in: RoundedRectangle(cornerRadius: 14))
                 VStack(alignment: .leading, spacing: 5) {
                     HStack {
                         Text(document.type).font(.subheadline.bold()).foregroundStyle(.primary)
@@ -126,8 +221,14 @@ struct DocumentRow: View {
                     }
                     Text("\(document.registration) · \(document.number)")
                         .font(.caption).foregroundStyle(.secondary)
-                    Text("Expires \(document.expiryDate.shortDate)").font(.caption2)
-                        .foregroundStyle(document.status == "Expired" ? .red : .secondary)
+                    HStack(spacing: 5) {
+                        Image(systemName: "calendar")
+                        Text("Expires \(document.expiryDate.shortDate)")
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(document.status == "Expired" ? .red : .secondary)
                 }
             }
         }
@@ -220,17 +321,12 @@ struct DocumentDetailView: View {
         }
         .alert("Delete this document?", isPresented: $showDeleteAlert) {
             Button("Delete", role: .destructive) {
-                do {
-                    try store.deleteDocumentScan(documentID: document.id)
-                    store.documents.removeAll { $0.id == document.id }
-                    store.persist()
-                    store.refreshLocalReminders()
-                    dismiss()
-                } catch { deleteError = error.localizedDescription }
+                store.deleteDocument(document)
+                dismiss()
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This cannot be undone.")
+            Text("You can undo this from the message shown after deletion.")
         }
     }
 }
@@ -266,6 +362,10 @@ struct EditDocumentView: View {
     @Environment(\.dismiss) private var dismiss
     @State var document: VehicleDocument
     var onSave: (VehicleDocument) -> Void
+    private var vehicleRegistration: String {
+        store.vehicles.first(where: { $0.id == document.vehicleID })?.registration
+            ?? document.registration
+    }
     var body: some View {
         Form {
             Section("Document") {
@@ -276,13 +376,14 @@ struct EditDocumentView: View {
                     ) { Text($0) }
                 }
                 TextField("Document number", text: $document.number)
-                TextField("Registration", text: $document.registration)
+                LabeledContent("Registration", value: vehicleRegistration)
                 DatePicker("Issue date", selection: $document.issueDate, displayedComponents: .date)
                 DatePicker(
                     "Expiry date", selection: $document.expiryDate, displayedComponents: .date)
             }
             Section {
                 Button("Save changes") {
+                    document.registration = vehicleRegistration.uppercased()
                     document.status = computedDocumentStatus(document.expiryDate)
                     if let i = store.documents.firstIndex(where: { $0.id == document.id }) {
                         store.documents[i] = document
@@ -419,22 +520,35 @@ struct DocumentScannerFlow: View {
             }
             Spacer()
             VStack(spacing: 11) {
-                if DocumentCameraPicker.isCameraSupported {
+                HStack(spacing: 12) {
                     Button {
-                        showImagePicker = true
+                        openCamera()
                     } label: {
-                        Label("Scan with Camera", systemImage: "camera.viewfinder")
+                        scanSourceCard(
+                            title: "Camera Scan",
+                            detail: DocumentCameraPicker.isCameraSupported
+                                ? "Auto-detect edges" : "Requires a real iPhone",
+                            symbol: "camera.viewfinder",
+                            isPrimary: true
+                        )
                     }
-                    .buttonStyle(PrimaryButtonStyle())
+                    .buttonStyle(.plain)
+                    .disabled(isProcessing)
+
+                    Button {
+                        error = nil
+                        showPhotoLibrary = true
+                    } label: {
+                        scanSourceCard(
+                            title: "Photo Library",
+                            detail: "Choose existing photos",
+                            symbol: "photo.on.rectangle",
+                            isPrimary: false
+                        )
+                    }
+                    .buttonStyle(.plain)
                     .disabled(isProcessing)
                 }
-                Button {
-                    showPhotoLibrary = true
-                } label: {
-                    Label("Choose from Photos", systemImage: "photo.on.rectangle")
-                }
-                .buttonStyle(PrimaryButtonStyle())
-                .disabled(isProcessing)
                 Button {
                     scannedPages = []
                     preparedPages = []
@@ -450,6 +564,44 @@ struct DocumentScannerFlow: View {
             .padding(20)
         }
         .background(Color.appCanvas.ignoresSafeArea()).toolbar(.hidden, for: .navigationBar)
+    }
+
+    private func scanSourceCard(
+        title: String, detail: String, symbol: String, isPrimary: Bool
+    ) -> some View {
+        VStack(spacing: 9) {
+            Image(systemName: symbol)
+                .font(.system(size: 24, weight: .semibold))
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+            Text(detail)
+                .font(.caption2)
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
+        }
+        .foregroundStyle(isPrimary ? Color.appCanvas : Color.appAccent)
+        .frame(maxWidth: .infinity, minHeight: 112)
+        .padding(.horizontal, 8)
+        .background(
+            isPrimary ? Color.appAccent : Color.appAccent.opacity(0.1),
+            in: RoundedRectangle(cornerRadius: 17, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 17, style: .continuous)
+                .strokeBorder(Color.appAccent.opacity(isPrimary ? 0 : 0.24), lineWidth: 1)
+        }
+    }
+
+    private func openCamera() {
+        guard DocumentCameraPicker.isCameraSupported else {
+            error =
+                "Document camera scanning is not available in the iOS Simulator. Run the app on a real iPhone to scan with VisionKit, or choose a photo from the library."
+            return
+        }
+        error = nil
+        showImagePicker = true
     }
 
     private func runOCR(on pages: [UIImage]) {
@@ -564,6 +716,9 @@ struct OCRReviewView: View {
     @State private var issueDateFound = false
     @State private var expiryDateFound = false
     @State private var didAutofill = false
+    private var vehicle: Vehicle? {
+        store.vehicles.first(where: { $0.id == vehicleID }) ?? store.selectedVehicle
+    }
     var body: some View {
         Form {
             Section {
@@ -598,7 +753,8 @@ struct OCRReviewView: View {
             }
             Section("Confirm details") {
                 TextField("Document number", text: $number)
-                TextField("Vehicle registration", text: $registration)
+                LabeledContent(
+                    "Vehicle registration", value: vehicle?.registration ?? "No vehicle selected")
                 DatePicker("Issue date", selection: $issueDate, displayedComponents: .date)
                 DatePicker("Expiry date", selection: $expiryDate, displayedComponents: .date)
                 if !extractedText.isEmpty && (!issueDateFound || !expiryDateFound) {
@@ -617,7 +773,7 @@ struct OCRReviewView: View {
             if let error { Text(error).foregroundStyle(.red) }
             Section {
                 Button("Confirm and save") { save() }
-                    .disabled(number.isEmpty || registration.isEmpty)
+                    .disabled(number.isEmpty || vehicle == nil)
             }
         }
         .navigationTitle("Verify details").navigationBarTitleDisplayMode(.inline)
@@ -644,11 +800,7 @@ struct OCRReviewView: View {
         }) {
             number = numberGuess
         }
-        if registration.isEmpty {
-            registration =
-                store.vehicles.first(where: { $0.id == vehicleID })?.registration
-                ?? store.selectedVehicle?.registration ?? ""
-        }
+        registration = vehicle?.registration ?? registration
         let dates = DocumentDateExtractor.extract(from: extractedText)
         if let date = dates.issue {
             issueDate = date
@@ -661,8 +813,7 @@ struct OCRReviewView: View {
     }
     private func save() {
         guard
-            let vehicle =
-                store.vehicles.first(where: { $0.id == vehicleID }) ?? store.selectedVehicle
+            let vehicle
         else {
             error = "Select a vehicle first."
             return
@@ -673,7 +824,7 @@ struct OCRReviewView: View {
         }
         let document = VehicleDocument(
             vehicleID: vehicle.id, type: type, number: number,
-            registration: registration.uppercased(), issueDate: issueDate,
+            registration: vehicle.registration.uppercased(), issueDate: issueDate,
             expiryDate: expiryDate, status: computedDocumentStatus(expiryDate),
             imageName: "doc.text.fill", scanPageCount: scannedPages.count)
         do {

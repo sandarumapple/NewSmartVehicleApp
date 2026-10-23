@@ -8,6 +8,7 @@ struct RootView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var selectedTab = 0
     @State private var showSplash = true
+    @AppStorage("smart-vehicle-did-show-launch-splash") private var didShowLaunchSplash = false
 
     private var colorScheme: ColorScheme? {
         switch store.appearance {
@@ -22,22 +23,67 @@ struct RootView: View {
             if showSplash {
                 SplashView()
             } else if store.isRestoringSession {
-                ProgressView("Loading your garage…")
+                SessionRestoreView {
+                    store.continueWithCachedData()
+                }
             } else if !store.isAuthenticated {
                 AuthenticationView()
+                    .id("authentication")
+                    .toolbar(.hidden, for: .tabBar)
             } else if !store.onboardingCompleted {
                 OnboardingWizardView()
             } else if store.biometricEnabled && !store.biometricUnlocked {
                 LockScreen()
             } else {
-                if horizontalSizeClass == .regular {
-                    iPadNavigation
-                } else {
-                    iPhoneNavigation
+                Group {
+                    if horizontalSizeClass == .regular {
+                        iPadNavigation
+                    } else {
+                        iPhoneNavigation
+                    }
                 }
+                .id("main-navigation")
             }
         }
         .preferredColorScheme(showSplash ? .dark : colorScheme)
+        .overlay(alignment: .top) {
+            if let error = store.backendError {
+                AppFeedbackBanner(
+                    message: friendlyMessage(for: error),
+                    isError: true,
+                    retry: { store.retryCloudSync() },
+                    dismiss: { store.backendError = nil }
+                )
+                .padding(.horizontal, 16).padding(.top, 8)
+                .transition(.move(edge: .top).combined(with: .opacity))
+            } else if let success = store.showSuccess {
+                AppFeedbackBanner(
+                    message: success,
+                    isError: false,
+                    dismiss: { store.showSuccess = nil }
+                )
+                .padding(.horizontal, 16).padding(.top, 8)
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(.easeOut(duration: 0.22), value: store.backendError)
+        .animation(.easeOut(duration: 0.22), value: store.showSuccess)
+        .overlay(alignment: .bottom) {
+            if let undoMessage = store.undoMessage {
+                UndoActionBanner(
+                    message: undoMessage,
+                    undo: { store.undoLastChange() },
+                    dismiss: { store.dismissUndo() }
+                )
+                .padding(.horizontal, 16)
+                .padding(.bottom, store.isAuthenticated ? 70 : 16)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.easeOut(duration: 0.22), value: store.undoMessage)
+        .onChange(of: store.isAuthenticated) { _, _ in
+            selectedTab = 0
+        }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background && store.biometricEnabled {
                 store.lockBiometricSession()
@@ -48,31 +94,37 @@ struct RootView: View {
         .task {
             store.startFirebase()
             guard showSplash else { return }
-            try? await Task.sleep(for: .seconds(1.4))
+            try? await Task.sleep(for: .milliseconds(didShowLaunchSplash ? 100 : 550))
+            didShowLaunchSplash = true
             if reduceMotion {
                 showSplash = false
             } else {
                 withAnimation(.easeOut(duration: 0.25)) { showSplash = false }
             }
         }
-        .alert(
-            store.backendError == nil ? "" : "Firebase error",
-            isPresented: Binding(
-                get: { store.showSuccess != nil || store.backendError != nil },
-                set: {
-                    if !$0 {
-                        store.showSuccess = nil
-                        store.backendError = nil
-                    }
-                })
-        ) {
-            Button("Done", role: .cancel) {
-                store.showSuccess = nil
-                store.backendError = nil
-            }
-        } message: {
-            Text(store.backendError ?? store.showSuccess ?? "")
+        .task(id: store.showSuccess) {
+            guard store.showSuccess != nil else { return }
+            try? await Task.sleep(for: .seconds(2.6))
+            guard !Task.isCancelled else { return }
+            withAnimation { store.showSuccess = nil }
         }
+    }
+
+    private func friendlyMessage(for message: String) -> String {
+        let value = message.lowercased()
+        if value.contains("network") || value.contains("offline")
+            || value.contains("internet") || value.contains("timed out")
+        {
+            return "You're offline or the connection is unstable. Your saved data is still available."
+        }
+        if value.contains("permission") {
+            return "This action isn't available for your account. Refresh and try again."
+        }
+        if value.contains("unauthenticated") || value.contains("sign in") {
+            return "Your session needs to be refreshed. Please sign in again."
+        }
+        if value.contains("already in your garage") { return message }
+        return "We couldn't sync that change. Check your connection and try again."
     }
 
     private var iPhoneNavigation: some View {
@@ -123,6 +175,40 @@ struct RootView: View {
         case 3: ExploreView()
         case 4: MoreView()
         default: HomeView(selectedTab: $selectedTab)
+        }
+    }
+}
+
+private struct SessionRestoreView: View {
+    let continueWithCache: () -> Void
+    @State private var isTakingLonger = false
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 18) {
+                ProgressView().controlSize(.large).tint(.appAccent)
+                Text("Loading your garage…").font(.headline)
+                Text(
+                    isTakingLonger
+                        ? "This is taking longer than expected. You can continue with data saved on this device."
+                        : "Restoring your vehicles and records."
+                )
+                .font(.subheadline).foregroundStyle(.secondary)
+                .multilineTextAlignment(.center).frame(maxWidth: 340)
+                LoadingSkeletonList(rows: 3)
+                    .frame(maxWidth: 430)
+                if isTakingLonger {
+                    Button("Continue with saved data", action: continueWithCache)
+                        .buttonStyle(SecondaryButtonStyle()).frame(maxWidth: 320)
+                }
+            }
+            .padding(28)
+            .frame(maxWidth: .infinity)
+        }
+        .background(Color.appCanvas.ignoresSafeArea())
+        .task {
+            try? await Task.sleep(for: .seconds(4))
+            withAnimation { isTakingLonger = true }
         }
     }
 }
@@ -189,7 +275,7 @@ private struct SplashView: View {
                         .accessibilityHidden(true)
 
                     Text("Smart Vehicle Maintenance")
-                        .font(.system(size: 25, weight: .bold, design: .rounded))
+                        .font(.title2.bold())
                         .tracking(-0.6)
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
@@ -197,7 +283,7 @@ private struct SplashView: View {
                         .padding(.top, 24)
 
                     Text("YOUR VEHICLE, SIMPLIFIED")
-                        .font(.system(size: 10.5, weight: .semibold))
+                        .font(.appBadge)
                         .tracking(2.7)
                         .foregroundStyle(Color(red: 0.38, green: 0.65, blue: 0.98))
                         .padding(.top, 7)
@@ -205,7 +291,7 @@ private struct SplashView: View {
                     HStack(spacing: 8) {
                         Circle().fill(Color.green).frame(width: 8, height: 8)
                         Text("Preparing your garage")
-                            .font(.system(size: 11.5, weight: .medium))
+                            .font(.appMetadata.weight(.medium))
                             .foregroundStyle(Color(red: 0.8, green: 0.84, blue: 0.9))
                     }
                     .padding(.horizontal, 14)
@@ -249,7 +335,7 @@ private struct SplashView: View {
                             )
                             .monospaced()
                         }
-                        .font(.system(size: 11))
+                        .font(.appMetadata)
                         .foregroundStyle(Color(red: 0.58, green: 0.64, blue: 0.72))
                     }
                     .frame(maxWidth: 280)
@@ -314,84 +400,371 @@ struct LockScreen: View {
 
 struct AuthenticationView: View {
     @EnvironmentObject private var store: AppStore
+    @Environment(\.colorScheme) private var colorScheme
     @StateObject private var viewModel = AuthenticationViewModel()
+    @State private var showPasswordReset = false
+
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                    VStack(alignment: .leading, spacing: 16) {
-                        Image(systemName: "car.side.fill").font(.system(size: 28))
-                            .foregroundStyle(.white).frame(width: 64, height: 64)
-                            .background(Color.appAccent, in: RoundedRectangle(cornerRadius: 20))
-                        Text(viewModel.isRegister ? "Start your\nvehicle journey." : "Welcome\nback.")
-                            .font(.system(size: 37, weight: .bold, design: .rounded))
-                        Text("Everything your car needs, in one place.").foregroundStyle(.secondary)
-                    }
-                    .padding(.top, 32)
-                    if viewModel.isRegister { FormField(title: "Full name", text: $viewModel.name) }
-                    FormField(title: "Email address", text: $viewModel.email, keyboard: .emailAddress)
-                    SecureField("Password", text: $viewModel.password).padding(14)
-                        .background(Color.appCard, in: RoundedRectangle(cornerRadius: 14))
-                    if !store.isFirebaseConfigured {
+            GeometryReader { geometry in
+                let usesWideLayout = geometry.size.width >= 600
+                let compactHeight = geometry.size.height < 900
+                let contentWidth: CGFloat = geometry.size.width < 900 ? 440 : 500
+                let panelHorizontalPadding: CGFloat = geometry.size.width < 900 ? 28 : 40
+                let panelVerticalPadding: CGFloat = compactHeight ? 16 : 28
+                let outerVerticalInset: CGFloat = compactHeight ? 10 : 24
+
+                ScrollView {
+                    VStack(spacing: 0) {
+                    VStack(spacing: 10) {
+                        AuthenticationBrandMark()
+                            .padding(.bottom, 4)
                         Text(
-                            "Local demo mode. Add a Firebase project to enable real accounts and sync."
+                            viewModel.isRegister
+                                ? "Create your account" : "Welcome back"
                         )
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.appScreenTitle)
+                        .tracking(-0.5)
+
+                        Text(
+                            viewModel.isRegister
+                                ? "Your smarter vehicle journey starts here."
+                                : "Everything your car needs, in one place."
+                        )
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
                     }
-                    if let error = viewModel.error {
-                        Text(error).font(.caption).foregroundStyle(.red)
-                    }
-                    Button(viewModel.isRegister ? "Create account" : "Sign in") {
-                        viewModel.submit(using: store)
-                    }
-                    .buttonStyle(PrimaryButtonStyle())
-                    .disabled(viewModel.isSubmitting)
-                    if viewModel.isSubmitting { ProgressView() }
-                    if store.isFirebaseConfigured {
-                        HStack {
-                            Rectangle().frame(height: 1).foregroundStyle(.quaternary)
-                            Text("or continue with").font(.caption).foregroundStyle(.secondary)
-                                .fixedSize()
-                            Rectangle().frame(height: 1).foregroundStyle(.quaternary)
-                        }
-                        Button {
-                            viewModel.signInWithGoogle(using: store)
-                        } label: {
-                            Text("Continue with Google")
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 18)
+                    .padding(.bottom, 26)
+
+                    VStack(alignment: .leading, spacing: 16) {
+                        if store.isFirebaseConfigured {
+                            if viewModel.isRegister {
+                                FormField(title: "Full name", text: $viewModel.name)
+                                    .textContentType(.name)
+                            }
+                            FormField(
+                                title: "Email address", text: $viewModel.email,
+                                keyboard: .emailAddress
+                            )
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .textContentType(.emailAddress)
+                            PasswordEntryField(
+                                title: "Password",
+                                text: $viewModel.password,
+                                contentType: viewModel.isRegister ? .newPassword : .password
+                            )
+                            if viewModel.isRegister {
+                                PasswordEntryField(
+                                    title: "Confirm password",
+                                    text: $viewModel.confirmPassword,
+                                    contentType: .newPassword
+                                )
+                            } else {
+                                Button("Forgot password?") {
+                                    viewModel.preparePasswordReset()
+                                    showPasswordReset = true
+                                }
                                 .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(Color.appAccent)
+                                .frame(maxWidth: .infinity, alignment: .trailing)
+                                .disabled(viewModel.isSubmitting)
+                            }
+                        } else {
+                            Text(
+                                "Firebase is not configured, so real account sign-in is unavailable. "
+                                    + "You can continue with an isolated demo profile."
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .padding(14)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color.appCard, in: RoundedRectangle(cornerRadius: 14))
+                        }
+                        if let error = viewModel.error {
+                            Label(error, systemImage: "exclamationmark.circle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                                .padding(.horizontal, 4)
+                        }
+                        if let notice = viewModel.notice {
+                            Label(notice, systemImage: "checkmark.circle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.green)
+                                .padding(.horizontal, 4)
+                        }
+                        if store.isFirebaseConfigured {
+                            Button {
+                                viewModel.submit(using: store)
+                            } label: {
+                                ZStack {
+                                    Text(viewModel.isRegister ? "Create Account" : "Sign In")
+                                        .opacity(viewModel.isSubmitting ? 0 : 1)
+                                    if viewModel.isSubmitting {
+                                        ProgressView().tint(.white)
+                                    }
+                                }
+                            }
+                            .buttonStyle(AuthenticationPrimaryButtonStyle())
+                            .disabled(viewModel.isSubmitting)
+
+                            HStack(spacing: 12) {
+                                Rectangle().frame(height: 1)
+                                Text("OR")
+                                    .font(.caption2.weight(.medium))
+                                    .tracking(0.8)
+                                    .fixedSize()
+                                Rectangle().frame(height: 1)
+                            }
+                            .foregroundStyle(Color.secondary.opacity(0.35))
+                            .padding(.vertical, 2)
+
+                            SignInWithAppleButton(.signIn) { request in
+                                request.requestedScopes = [.fullName, .email]
+                                request.nonce = viewModel.prepareAppleNonce()
+                            } onCompletion: { result in
+                                viewModel.completeAppleSignIn(result, using: store)
+                            }
+                            .signInWithAppleButtonStyle(colorScheme == .dark ? .white : .black)
+                            .frame(height: 48)
+                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            .disabled(viewModel.isSubmitting)
+
+                            Button {
+                                viewModel.signInWithGoogle(using: store)
+                            } label: {
+                                HStack(spacing: 10) {
+                                    Image("GoogleLogo")
+                                        .resizable()
+                                        .scaledToFit()
+                                        .frame(width: 18, height: 18)
+                                        .accessibilityHidden(true)
+                                    Text("Continue with Google")
+                                        .font(.subheadline.weight(.semibold))
+                                }
                                 .frame(maxWidth: .infinity)
                                 .frame(height: 48)
+                            }
+                            .buttonStyle(AuthenticationSocialButtonStyle())
+                            .disabled(viewModel.isSubmitting)
+
+                            Button {
+                                withAnimation { viewModel.toggleMode() }
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Text(
+                                        viewModel.isRegister
+                                            ? "Already have an account?" : "Don't have an account?"
+                                    )
+                                    .foregroundStyle(.secondary)
+                                    Text(viewModel.isRegister ? "Sign In" : "Create Account")
+                                        .fontWeight(.semibold)
+                                        .foregroundStyle(Color.authBlue)
+                                }
+                                .font(.subheadline)
+                                .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.top, 12)
+                            .disabled(viewModel.isSubmitting)
+                        } else {
+                            Button("Continue in demo mode") { store.continueInDemoMode() }
+                                .buttonStyle(AuthenticationPrimaryButtonStyle())
                         }
-                        .buttonStyle(.bordered)
-                        .disabled(viewModel.isSubmitting)
                     }
-                    if store.isFirebaseConfigured
-                        && Bundle.main.object(forInfoDictionaryKey: "AppleSignInConfigured")
-                            as? Bool
-                            == true
-                    {
-                        SignInWithAppleButton(.signIn) { request in
-                            request.requestedScopes = [.fullName, .email]
-                            request.nonce = viewModel.prepareAppleNonce()
-                        } onCompletion: { result in
-                            viewModel.completeAppleSignIn(result, using: store)
+                    }
+                    .frame(maxWidth: usesWideLayout ? contentWidth : 430)
+                    .padding(.horizontal, usesWideLayout ? panelHorizontalPadding : 20)
+                    .padding(.top, usesWideLayout ? panelVerticalPadding : 0)
+                    .padding(.bottom, usesWideLayout ? panelVerticalPadding : 32)
+                    .background {
+                        if usesWideLayout {
+                            RoundedRectangle(cornerRadius: 30, style: .continuous)
+                                .fill(Color.appCanvas.opacity(0.94))
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 30, style: .continuous)
+                                        .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+                                }
+                                .shadow(color: .black.opacity(0.12), radius: 28, y: 12)
                         }
-                        .signInWithAppleButtonStyle(.black)
-                        .frame(height: 48)
                     }
-                    Button(
-                        viewModel.isRegister
-                            ? "Already have an account? Sign in" : "New here? Create an account"
-                    ) {
-                        withAnimation { viewModel.toggleMode() }
-                    }
-                    .font(.subheadline.weight(.semibold)).foregroundStyle(Color.appAccent)
-                    .frame(maxWidth: .infinity).padding(.top, 8)
+                    .frame(
+                        maxWidth: .infinity,
+                        minHeight: usesWideLayout
+                            ? max(0, geometry.size.height - (outerVerticalInset * 2)) : nil,
+                        alignment: usesWideLayout ? .center : .top
+                    )
+                    .padding(.horizontal, usesWideLayout ? 24 : 0)
+                    .padding(.vertical, usesWideLayout ? outerVerticalInset : 0)
                 }
-                .padding(24)
+                .scrollIndicators(.hidden)
+                .scrollDismissesKeyboard(.interactively)
+                .background {
+                    LinearGradient(
+                        colors: [
+                            Color.appCanvas,
+                            Color.authBlue.opacity(usesWideLayout ? 0.11 : 0.055),
+                            Color.appCanvas,
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                    .ignoresSafeArea()
+                }
             }
-            .background(Color.appCanvas).toolbar(.hidden, for: .navigationBar)
+            .toolbar(.hidden, for: .navigationBar)
+        }
+        .sheet(isPresented: $showPasswordReset) {
+            PasswordResetView(viewModel: viewModel)
+                .environmentObject(store)
         }
     }
+}
 
+private struct AuthenticationBrandMark: View {
+    var body: some View {
+        Image(systemName: "car.side.fill")
+            .font(.system(size: 29, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(width: 70, height: 70)
+            .background {
+                LinearGradient(
+                    colors: [Color.authBlue.opacity(0.95), Color.blue.opacity(0.55), .black],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .stroke(Color.blue.opacity(0.35), lineWidth: 1)
+            }
+            .shadow(color: Color.authBlue.opacity(0.38), radius: 18, y: 8)
+            .accessibilityHidden(true)
+    }
+}
+
+private struct AuthenticationPrimaryButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.headline)
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity)
+            .frame(height: 48)
+            .background(
+                Color.authBlue.opacity(configuration.isPressed ? 0.78 : 1),
+                in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+            )
+            .shadow(color: .black.opacity(0.08), radius: 2, y: 1)
+    }
+}
+
+private struct AuthenticationSocialButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(.primary)
+            .background(
+                Color.appCard.opacity(configuration.isPressed ? 0.72 : 1),
+                in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(Color.secondary.opacity(0.22), lineWidth: 1)
+            }
+    }
+}
+
+private extension Color {
+    static let authBlue = Color(red: 0.039, green: 0.518, blue: 1)
+}
+
+private struct PasswordEntryField: View {
+    let title: String
+    @Binding var text: String
+    let contentType: UITextContentType
+    @State private var isRevealed = false
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Group {
+                if isRevealed {
+                    TextField(title, text: $text)
+                } else {
+                    SecureField(title, text: $text)
+                }
+            }
+            .textContentType(contentType)
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+
+            Button {
+                isRevealed.toggle()
+            } label: {
+                Image(systemName: isRevealed ? "eye.slash.fill" : "eye.fill")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 28, height: 28)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(isRevealed ? "Hide \(title)" : "Show \(title)")
+        }
+        .padding(14)
+        .background(Color.appCard, in: RoundedRectangle(cornerRadius: 14))
+    }
+}
+
+private struct PasswordResetView: View {
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject var viewModel: AuthenticationViewModel
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 18) {
+                Text("Reset your password")
+                    .font(.title2.bold())
+                Text("Enter your account email and we'll send a secure reset link.")
+                    .foregroundStyle(.secondary)
+                FormField(
+                    title: "Email address", text: $viewModel.resetEmail,
+                    keyboard: .emailAddress
+                )
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .textContentType(.emailAddress)
+                if let error = viewModel.resetError {
+                    Text(error).font(.caption).foregroundStyle(.red)
+                }
+                if let confirmation = viewModel.resetConfirmation {
+                    Label(confirmation, systemImage: "envelope.badge.fill")
+                        .font(.caption).foregroundStyle(.green)
+                }
+                Button(viewModel.resetConfirmation == nil ? "Send reset link" : "Done") {
+                    if viewModel.resetConfirmation == nil {
+                        viewModel.requestPasswordReset(using: store)
+                    } else {
+                        dismiss()
+                    }
+                }
+                .buttonStyle(PrimaryButtonStyle())
+                .disabled(viewModel.isResettingPassword)
+                if viewModel.isResettingPassword {
+                    ProgressView("Sending…").frame(maxWidth: .infinity)
+                }
+                Spacer()
+            }
+            .padding(24)
+            .background(Color.appCanvas)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                        .disabled(viewModel.isResettingPassword)
+                }
+            }
+        }
+        .presentationDetents([.medium])
+        .interactiveDismissDisabled(viewModel.isResettingPassword)
+    }
 }

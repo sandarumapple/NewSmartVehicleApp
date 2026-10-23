@@ -6,21 +6,25 @@ struct NotificationCenterView: View {
     @State private var deliveredNotifications: [UNNotification] = []
     private var alerts: [AlertItem] {
         var list: [AlertItem] = []
-        if let car = store.selectedVehicle, car.distanceToService <= 2500 {
+        for car in store.vehicles where car.distanceToService <= 2500 {
             list.append(
                 AlertItem(
+                    id: "vehicle-\(car.id.uuidString)",
                     title: "Service coming up",
                     message:
-                        "Your next service is due in \(car.distanceToService.formatted()) km or on \(car.nextServiceDate.shortDate).",
-                    symbol: "wrench.and.screwdriver.fill", tint: .orange, destination: .maintenance)
+                        "\(car.title) is due in \(car.distanceToService.formatted()) km or on \(car.nextServiceDate.shortDate).",
+                    symbol: "wrench.and.screwdriver.fill", tint: .orange,
+                    destination: .maintenance(car.id))
             )
         }
-        for document in store.selectedDocuments where document.status != "Valid" {
+        for document in store.documents where document.status != "Valid" {
             list.append(
                 AlertItem(
+                    id: "document-\(document.id.uuidString)",
                     title: document.status == "Expired"
                         ? "Document expired" : "Document expiring soon",
-                    message: "\(document.type) · \(document.expiryDate.shortDate)",
+                    message:
+                        "\(document.registration) · \(document.type) · \(document.expiryDate.shortDate)",
                     symbol: document.status == "Expired"
                         ? "exclamationmark.triangle.fill" : "doc.badge.clock",
                     tint: document.status == "Expired" ? .red : .orange,
@@ -30,6 +34,47 @@ struct NotificationCenterView: View {
     }
     var body: some View {
         List {
+            if let error = store.communityNotificationError {
+                Section {
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption).foregroundStyle(.orange)
+                }
+            }
+            if !store.communityNotifications.isEmpty {
+                Section("Community activity") {
+                    ForEach(store.communityNotifications) { notification in
+                        NavigationLink {
+                            CommunityNotificationDestinationView(notification: notification)
+                        } label: {
+                            HStack(alignment: .top, spacing: 12) {
+                                Image(
+                                    systemName: notification.type == "comment"
+                                        ? "bubble.left.fill" : "heart.fill"
+                                )
+                                .foregroundStyle(notification.type == "comment" ? .blue : .red)
+                                .frame(width: 38, height: 38)
+                                .background(
+                                    (notification.type == "comment" ? Color.blue : Color.red)
+                                        .opacity(0.1),
+                                    in: Circle())
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack {
+                                        Text(notification.title).font(.subheadline.bold())
+                                        if !notification.isRead {
+                                            Circle().fill(Color.appAccent).frame(width: 7, height: 7)
+                                        }
+                                    }
+                                    Text(notification.message)
+                                        .font(.caption).foregroundStyle(.secondary)
+                                    Text(notification.createdAt.formatted(.relative(presentation: .named)))
+                                        .font(.caption2).foregroundStyle(.tertiary)
+                                }
+                            }
+                            .padding(.vertical, 4)
+                        }
+                    }
+                }
+            }
             if !deliveredNotifications.isEmpty {
                 Section("Recent notifications") {
                     ForEach(deliveredNotifications, id: \.request.identifier) { notification in
@@ -44,7 +89,9 @@ struct NotificationCenterView: View {
                     }
                 }
             }
-            if alerts.isEmpty && deliveredNotifications.isEmpty {
+            if alerts.isEmpty && deliveredNotifications.isEmpty
+                && store.communityNotifications.isEmpty
+            {
                 EmptyStateView(
                     symbol: "bell.slash", title: "You're all caught up",
                     message: "Important vehicle updates will appear here.")
@@ -88,14 +135,37 @@ struct NotificationCenterView: View {
     private func refreshDeliveredNotifications() {
         UNUserNotificationCenter.current().getDeliveredNotifications { notifications in
             DispatchQueue.main.async {
-                deliveredNotifications = notifications.sorted { $0.date > $1.date }
+                deliveredNotifications = notifications.filter { notification in
+                    let type = notification.request.content.userInfo["type"] as? String
+                    return type != "like" && type != "comment"
+                }
+                .sorted { $0.date > $1.date }
             }
         }
     }
 }
 
+private struct CommunityNotificationDestinationView: View {
+    @EnvironmentObject private var store: AppStore
+    let notification: CommunityNotification
+
+    var body: some View {
+        Group {
+            if let post = store.posts.first(where: { $0.id == notification.postID }) {
+                PostDetailView(post: post)
+            } else {
+                EmptyStateView(
+                    symbol: "text.bubble", title: "Post unavailable",
+                    message: "This community post may have been removed.")
+                .navigationTitle("Community activity")
+            }
+        }
+        .onAppear { store.markCommunityNotificationRead(notification) }
+    }
+}
+
 struct AlertItem: Identifiable {
-    var id = UUID()
+    var id: String
     var title: String
     var message: String
     var symbol: String
@@ -103,7 +173,7 @@ struct AlertItem: Identifiable {
     var destination: AlertDestination
 }
 enum AlertDestination {
-    case maintenance
+    case maintenance(UUID)
     case document(VehicleDocument)
 }
 struct AlertDetailView: View {
@@ -115,8 +185,8 @@ struct AlertDetailView: View {
             Text(alert.title).font(.title2.bold())
             Text(alert.message).multilineTextAlignment(.center).foregroundStyle(.secondary)
             switch alert.destination {
-            case .maintenance:
-                NavigationLink("View maintenance") { MaintenanceListView() }
+            case .maintenance(let vehicleID):
+                NavigationLink("View maintenance") { MaintenanceListView(vehicleID: vehicleID) }
                     .buttonStyle(PrimaryButtonStyle()).padding(.top, 8)
             case .document(let document):
                 NavigationLink("View document") { DocumentDetailView(document: document) }
@@ -154,14 +224,46 @@ struct NotificationSettingsView: View {
             : "This device is waiting for APNs and Firebase registration."
     }
 
+    private var notificationsBinding: Binding<Bool> {
+        Binding(
+            get: {
+                store.notificationsEnabled
+                    && store.notificationPermissionState != .denied
+            },
+            set: { enabled in
+                if !enabled {
+                    store.notificationsEnabled = false
+                    store.notificationPreferencesChanged()
+                    return
+                }
+                if store.notificationPermissionState == .denied {
+                    store.notificationsEnabled = false
+                    store.notificationPreferencesChanged()
+                    openURL(URL(string: UIApplication.openSettingsURLString)!)
+                    return
+                }
+                store.notificationsEnabled = true
+                store.notificationPreferencesChanged()
+                requestPermission()
+            }
+        )
+    }
+
     var body: some View {
         Form {
             Section {
-                Toggle("Allow notifications", isOn: $store.notificationsEnabled)
-                    .onChange(of: store.notificationsEnabled) { _, enabled in
-                        store.notificationPreferencesChanged()
-                        if enabled { requestPermission() }
-                    }
+                Toggle("Allow notifications", isOn: notificationsBinding)
+                    .accessibilityHint(
+                        "Controls local reminders and Firebase push notifications for this account"
+                    )
+                Label(
+                    notificationsBinding.wrappedValue ? "Notifications are active" : "Notifications are off",
+                    systemImage: notificationsBinding.wrappedValue
+                        ? "bell.badge.fill" : "bell.slash.fill"
+                )
+                .font(.caption.weight(.medium))
+                .foregroundStyle(
+                    notificationsBinding.wrappedValue ? Color.appSuccess : .secondary)
             } footer: {
                 Text(
                     "This controls local reminders and remote push registration for this account."
@@ -207,6 +309,11 @@ struct NotificationSettingsView: View {
         .onChange(of: store.vehicleNotifications) { _, _ in store.notificationPreferencesChanged() }
     }
     private func requestPermission() {
-        store.requestNotificationPermission { _ in }
+        store.requestNotificationPermission { state in
+            if !state.allowsAlerts {
+                store.notificationsEnabled = false
+                store.notificationPreferencesChanged()
+            }
+        }
     }
 }

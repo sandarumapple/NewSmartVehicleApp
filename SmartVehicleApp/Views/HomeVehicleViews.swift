@@ -20,11 +20,6 @@ struct HomeView: View {
     @State private var showExpense = false
     @State private var showMaintenance = false
     @State private var showScanner = false
-    @State private var showReports = false
-    @State private var showWidgetHelp = false
-    @State private var showDocuments = false
-    @State private var showAnalytics = false
-    @State private var showNearby = false
     @State private var showVehicleDetails = false
     var vehicle: Vehicle? { store.selectedVehicle }
     private var viewModel: DashboardViewModel {
@@ -35,7 +30,6 @@ struct HomeView: View {
     }
     private var attentionDocuments: [VehicleDocument] { viewModel.attentionDocuments }
     private var serviceNeedsAttention: Bool { viewModel.serviceNeedsAttention }
-    private var thisMonthExpenses: Double { viewModel.thisMonthExpenses }
     private var recentActivity: [DashboardActivity] {
         let services = store.selectedVehicleRecords.map {
             DashboardActivity(
@@ -57,7 +51,14 @@ struct HomeView: View {
         }
         return (services + fuel + expenses).sorted { $0.date > $1.date }
     }
-    private var nextReminder: Date? { viewModel.nextReminder }
+    private var relatedCommunityPosts: [CommunityPost] {
+        guard let vehicle else { return [] }
+        return Array(
+            CommunityFeedViewModel.visiblePosts(
+                store.posts, category: "All posts", vehicleQuery: vehicle.title,
+                authorFilter: .otherDrivers, currentUserID: store.currentUserID
+            ).prefix(2))
+    }
     var body: some View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 20) {
@@ -78,7 +79,9 @@ struct HomeView: View {
                             .frame(width: 44, height: 44)
                             .background(Color.appElevated, in: Circle())
                             .overlay(alignment: .topTrailing) {
-                                if serviceNeedsAttention || !attentionDocuments.isEmpty {
+                                if serviceNeedsAttention || !attentionDocuments.isEmpty
+                                    || store.unreadCommunityNotificationCount > 0
+                                {
                                     Circle().fill(Color.red).frame(width: 8, height: 8)
                                         .padding(8)
                                 }
@@ -127,8 +130,7 @@ struct HomeView: View {
                 if let vehicle {
                     GarageHeroCard(
                         vehicle: vehicle,
-                        onDetails: { showVehicleDetails = true },
-                        onDocuments: { showDocuments = true }
+                        onDetails: { showVehicleDetails = true }
                     )
                     .padding(.horizontal, 16)
 
@@ -156,39 +158,42 @@ struct HomeView: View {
                                 && !dynamicTypeSize.isAccessibilitySize ? 4 : 2),
                         spacing: 10
                     ) {
-                        QuickAction(symbol: "fuelpump.fill", label: "Fuel", tint: .appAccent) {
+                        QuickAction(symbol: "fuelpump.fill", label: "Add fuel", tint: .appAccent) {
                             showFuel = true
                         }
-                        QuickAction(symbol: "doc.richtext", label: "Reports", tint: .blue) {
-                            showReports = true
-                        }
-                        QuickAction(symbol: "wrench.fill", label: "Service", tint: .appSuccess) {
+                        QuickAction(
+                            symbol: "wrench.and.screwdriver.fill", label: "Maintenance",
+                            tint: .appSuccess
+                        ) {
                             showMaintenance = true
                         }
-                        QuickAction(symbol: "creditcard.fill", label: "Expense", tint: .purple) {
+                        QuickAction(symbol: "creditcard.fill", label: "Add expense", tint: .purple) {
                             showExpense = true
                         }
-                        QuickAction(symbol: "chart.xyaxis.line", label: "Analytics", tint: .orange)
-                        {
-                            showAnalytics = true
-                        }
-                        QuickAction(symbol: "doc.text.fill", label: "Documents", tint: .red) {
-                            showDocuments = true
-                        }
-                        QuickAction(symbol: "doc.viewfinder", label: "Scan", tint: .mint) {
+                        QuickAction(symbol: "doc.viewfinder", label: "Scan document", tint: .mint) {
                             showScanner = true
-                        }
-                        QuickAction(symbol: "map.fill", label: "Nearby", tint: .yellow) {
-                            showNearby = true
                         }
                     }
                 }
                 .padding(.horizontal, 16)
 
+                if !recentActivity.isEmpty {
+                    NavigationLink {
+                        AnalyticsView()
+                    } label: {
+                        DashboardAnalyticsCard(
+                            activities: recentActivity
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 16)
+                    .accessibilityHint("Opens full vehicle analytics")
+                }
+
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
                         Label("Needs your attention", systemImage: "bell.badge.fill")
-                            .font(.system(size: 15, weight: .semibold))
+                            .font(.appCardTitle)
                             .foregroundStyle(Color.appInk)
                         Spacer()
                         Button("See all") { selectedTab = 1 }.font(.subheadline.weight(.semibold))
@@ -220,7 +225,20 @@ struct HomeView: View {
                                     )
                                 }
                             }
-                            if !serviceNeedsAttention && attentionDocuments.isEmpty {
+                            if store.unreadCommunityNotificationCount > 0 {
+                                Button {
+                                    showNotifications = true
+                                } label: {
+                                    attentionRow(
+                                        "Community updates",
+                                        "\(store.unreadCommunityNotificationCount) unread \(store.unreadCommunityNotificationCount == 1 ? "notification" : "notifications")",
+                                        tint: .purple
+                                    )
+                                }
+                            }
+                            if !serviceNeedsAttention && attentionDocuments.isEmpty
+                                && store.unreadCommunityNotificationCount == 0
+                            {
                                 Label("All up to date", systemImage: "checkmark.seal.fill")
                                     .font(.subheadline.weight(.medium))
                                     .foregroundStyle(Color.appSuccess)
@@ -230,93 +248,6 @@ struct HomeView: View {
                         .buttonStyle(.plain)
                     }
                 }
-                .padding(.horizontal, 16)
-
-                if let vehicle {
-                    VStack(alignment: .leading, spacing: 12) {
-                        SectionHeading(title: "Vehicle overview")
-                        LazyVGrid(
-                            columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10
-                        ) {
-                            NavigationLink {
-                                MaintenanceListView()
-                            } label: {
-                                MetricTile(
-                                    title: "Next service",
-                                    value: "\(vehicle.distanceToService.formatted()) km",
-                                    detail: vehicle.nextServiceDate.shortDate,
-                                    symbol: "wrench.fill", tint: .orange)
-                            }
-                            NavigationLink {
-                                FuelListView()
-                            } label: {
-                                MetricTile(
-                                    title: "Fuel status",
-                                    value: "\(store.selectedFuelRecords.count) refills",
-                                    detail: vehicle.fuel, symbol: "fuelpump.fill", tint: .appSuccess
-                                )
-                            }
-                            NavigationLink {
-                                ExpenseListView()
-                            } label: {
-                                MetricTile(
-                                    title: "This month",
-                                    value: compactMoney(thisMonthExpenses),
-                                    detail: "Recorded expenses", symbol: "creditcard.fill")
-                            }
-                            NavigationLink {
-                                DocumentsView()
-                            } label: {
-                                MetricTile(
-                                    title: "Documents",
-                                    value: "\(store.selectedDocuments.count) saved",
-                                    detail: "Your document vault", symbol: "doc.text.fill",
-                                    tint: .purple)
-                            }
-                            NavigationLink {
-                                MaintenanceListView()
-                            } label: {
-                                MetricTile(
-                                    title: "Next reminder",
-                                    value: nextReminder?.shortDate ?? "None",
-                                    detail: "Upcoming event", symbol: "calendar.badge.clock",
-                                    tint: .orange)
-                            }
-                            NavigationLink {
-                                AnalyticsView()
-                            } label: {
-                                DashboardTrendTile(expenses: store.selectedExpenses)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    .padding(.horizontal, 16)
-                }
-
-                Button {
-                    showWidgetHelp = true
-                } label: {
-                    HStack(spacing: 16) {
-                        Image(systemName: "square.grid.2x2.fill")
-                            .font(.system(size: 28))
-                            .foregroundStyle(Color.appAccent)
-                            .frame(width: 62, height: 62)
-                            .background(Color.appMint, in: RoundedRectangle(cornerRadius: 14))
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text("Your garage, at a glance")
-                                .font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
-                            Text("Add the Smart Vehicle widget to your Home Screen")
-                                .font(.caption).foregroundStyle(.secondary)
-                                .multilineTextAlignment(.leading)
-                        }
-                        Spacer(minLength: 0)
-                        Image(systemName: "arrow.up.right")
-                            .font(.caption).foregroundStyle(Color.appAccent)
-                    }
-                    .padding(16)
-                    .background(Color.appCard, in: RoundedRectangle(cornerRadius: 12))
-                }
-                .buttonStyle(.plain)
                 .padding(.horizontal, 16)
 
                 VStack(alignment: .leading, spacing: 12) {
@@ -344,59 +275,36 @@ struct HomeView: View {
                     }
                 }
                 .padding(.horizontal, 16)
-                VStack(alignment: .leading, spacing: 12) {
-                    SectionHeading(title: "Nearby services")
-                    NavigationLink {
-                        NearbyMapView()
-                    } label: {
-                        HStack(spacing: 14) {
-                            Image(systemName: "map.fill")
-                                .font(.system(size: 31))
-                                .foregroundStyle(Color.appAccent)
-                                .frame(width: 64, height: 64)
-                                .background(Color.appMint, in: RoundedRectangle(cornerRadius: 12))
-                            VStack(alignment: .leading, spacing: 5) {
-                                Text("Explore your area")
-                                    .font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
-                                Text("Fuel stations, garages & vehicle care")
-                                    .font(.caption).foregroundStyle(.secondary)
+                if let vehicle, !relatedCommunityPosts.isEmpty {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            SectionHeading(title: "For your \(vehicle.model)")
+                            Spacer()
+                            NavigationLink("View all") {
+                                CommunityView(initialVehicleQuery: vehicle.title)
                             }
-                            Spacer(minLength: 0)
-                            Image(systemName: "arrow.up.right")
-                                .font(.caption).foregroundStyle(Color.appAccent)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(Color.appAccent)
                         }
-                        .padding(16)
-                        .background(Color.appCard, in: RoundedRectangle(cornerRadius: 12))
+                        SurfaceCard(padding: 14) {
+                            VStack(spacing: 0) {
+                                ForEach(Array(relatedCommunityPosts.enumerated()), id: \.element.id) {
+                                    index, post in
+                                    NavigationLink {
+                                        PostDetailView(post: post)
+                                    } label: {
+                                        relatedCommunityPostRow(post)
+                                    }
+                                    if index < relatedCommunityPosts.count - 1 {
+                                        Divider().padding(.vertical, 11)
+                                    }
+                                }
+                            }
+                        }
+                        .buttonStyle(.plain)
                     }
-                    SectionHeading(title: "Marketplace")
-                    NavigationLink {
-                        MarketplaceView()
-                    } label: {
-                        dashboardLink(
-                            store.marketplaceItems.first?.title
-                                ?? "Discover vehicles & spare parts",
-                            store.marketplaceItems.first?.price ?? "Browse the marketplace",
-                            "bag.fill", .orange)
-                    }
-                    SectionHeading(title: "Owner community")
-                    NavigationLink {
-                        CommunityView()
-                    } label: {
-                        dashboardLink(
-                            store.posts.first?.author ?? "Join the conversation",
-                            store.posts.first?.text ?? "Stories and advice from fellow drivers",
-                            "bubble.left.and.bubble.right.fill", .purple)
-                    }
-                    SectionHeading(title: "Vehicle reports")
-                    Button {
-                        showReports = true
-                    } label: {
-                        dashboardLink(
-                            "Your vehicle dossier", "Maintenance, costs and ownership",
-                            "doc.richtext", .appSuccess)
-                    }
+                    .padding(.horizontal, 16)
                 }
-                .buttonStyle(.plain).padding(.horizontal, 16)
                 Spacer(minLength: 18)
             }
             .padding(.top, 8)
@@ -405,9 +313,6 @@ struct HomeView: View {
         }
         .background(Color.appCanvas.ignoresSafeArea())
         .toolbar(.hidden, for: .navigationBar)
-        .navigationDestination(isPresented: $showDocuments) { DocumentsView() }
-        .navigationDestination(isPresented: $showAnalytics) { AnalyticsView() }
-        .navigationDestination(isPresented: $showNearby) { NearbyMapView() }
         .navigationDestination(isPresented: $showVehicleDetails) {
             if let vehicle { VehicleDetailView(vehicle: vehicle) }
         }
@@ -421,14 +326,6 @@ struct HomeView: View {
         .sheet(isPresented: $showExpense) { NavigationStack { AddExpenseView() } }
         .fullScreenCover(isPresented: $showScanner) {
             NavigationStack { DocumentScannerFlow(startWithCamera: true) }
-        }
-        .sheet(isPresented: $showReports) { NavigationStack { ReportSetupView() } }
-        .alert("Add the Smart Vehicle widget", isPresented: $showWidgetHelp) {
-            Button("Done", role: .cancel) {}
-        } message: {
-            Text(
-                "Touch and hold your Home Screen, tap Edit, then Add Widget and search for Smart Vehicle."
-            )
         }
     }
     private func attentionRow(_ title: String, _ subtitle: String, tint: Color) -> some View {
@@ -445,22 +342,29 @@ struct HomeView: View {
         .padding(10)
         .background(Color.appElevated, in: RoundedRectangle(cornerRadius: 8))
     }
-    private func dashboardLink(_ title: String, _ subtitle: String, _ symbol: String, _ tint: Color)
-        -> some View
-    {
-        SurfaceCard {
-            HStack(spacing: 12) {
-                Image(systemName: symbol).foregroundStyle(tint)
-                    .frame(width: 42, height: 42)
-                    .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
-                    Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+    private func relatedCommunityPostRow(_ post: CommunityPost) -> some View {
+        HStack(alignment: .top, spacing: 11) {
+            Text(post.initials)
+                .font(.caption.bold()).foregroundStyle(Color.appAccent)
+                .frame(width: 36, height: 36).background(Color.appMint, in: Circle())
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text(post.author).font(.subheadline.weight(.semibold))
+                    Spacer()
+                    StatusBadge(text: post.category)
                 }
-                Spacer()
-                Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
+                Text(post.text).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                HStack(spacing: 12) {
+                    Label("\(post.likes)", systemImage: "heart")
+                    Label("\(post.comments)", systemImage: "bubble.left")
+                    Text(post.displayTime)
+                }
+                .font(.caption2).foregroundStyle(.tertiary)
             }
+            Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
+                .padding(.top, 4)
         }
+        .contentShape(Rectangle())
     }
 
 }
@@ -475,58 +379,167 @@ private struct DashboardActivity: Identifiable {
     let tint: Color
 }
 
-private struct DashboardTrendTile: View {
-    let expenses: [ExpenseRecord]
+private struct DashboardSpendPoint: Identifiable {
+    let month: Date
+    let amount: Double
+    let recordCount: Int
 
-    private var months: [(date: Date, amount: Double)] {
+    var id: Date { month }
+}
+
+private struct DashboardAnalyticsCard: View {
+    let activities: [DashboardActivity]
+
+    private var latest: DashboardActivity? {
+        activities.max { $0.date < $1.date }
+    }
+
+    private var monthlySpending: [DashboardSpendPoint] {
         let calendar = Calendar.current
         let currentMonth = calendar.dateInterval(of: .month, for: Date())?.start ?? Date()
-        return (0..<6).reversed()
-            .compactMap { offset in
-                guard let month = calendar.date(byAdding: .month, value: -offset, to: currentMonth)
-                else { return nil }
-                let amount =
-                    expenses
-                    .filter { calendar.isDate($0.date, equalTo: month, toGranularity: .month) }
-                    .reduce(0) { $0 + $1.amount }
-                return (month, amount)
-            }
+
+        return (0..<6).reversed().compactMap { offset in
+            guard let month = calendar.date(byAdding: .month, value: -offset, to: currentMonth),
+                let interval = calendar.dateInterval(of: .month, for: month)
+            else { return nil }
+
+            let records = activities.filter { interval.contains($0.date) }
+            return DashboardSpendPoint(
+                month: month,
+                amount: records.reduce(0) { $0 + numericAmount($1.amount) },
+                recordCount: records.count
+            )
+        }
+    }
+
+    private var recentSpending: Double {
+        monthlySpending.reduce(0) { $0 + $1.amount }
+    }
+
+    private var hasSpendingData: Bool { monthlySpending.contains { $0.amount > 0 } }
+
+    private var spendingInsight: String {
+        guard let current = monthlySpending.last else { return "Add an activity to see your trend." }
+        guard current.amount > 0 else {
+            return "No spending recorded in \(current.month.formatted(.dateTime.month(.wide)))."
+        }
+        guard monthlySpending.count > 1 else {
+            return "\(current.recordCount) record\(current.recordCount == 1 ? "" : "s") this month."
+        }
+
+        let previous = monthlySpending[monthlySpending.count - 2]
+        guard previous.amount > 0 else {
+            return "\(current.recordCount) record\(current.recordCount == 1 ? "" : "s") this month."
+        }
+
+        let difference = current.amount - previous.amount
+        let direction = difference >= 0 ? "up" : "down"
+        return "\(direction.capitalized) \(compactMoney(abs(difference))) from last month."
     }
 
     var body: some View {
-        SurfaceCard(padding: 14) {
-            VStack(alignment: .leading, spacing: 8) {
-                Image(systemName: "chart.xyaxis.line")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(Color.orange)
-                    .frame(width: 32, height: 32)
-                    .background(Color.orange.opacity(0.11), in: Circle())
-                Chart(months, id: \.date) { month in
-                    LineMark(
-                        x: .value("Month", month.date),
-                        y: .value("Expenses", month.amount)
-                    )
-                    .foregroundStyle(Color.appAccent)
-                    .interpolationMethod(.catmullRom)
+        SurfaceCard(padding: 16) {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Label("Spending overview", systemImage: "chart.xyaxis.line")
+                            .font(.appCardTitle)
+                            .foregroundStyle(Color.appInk)
+                        Text("Last 6 months · Tap for full analytics")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text(compactMoney(recentSpending))
+                            .font(.subheadline.bold()).monospacedDigit()
+                        Text("TOTAL SPEND")
+                            .font(.caption2.weight(.bold)).tracking(0.5)
+                            .foregroundStyle(.secondary)
+                    }
                 }
-                .chartXAxis(.hidden)
-                .chartYAxis(.hidden)
-                .frame(height: 32)
-                Text("Analytics").font(.caption.weight(.semibold))
-                Text("6-month expense trend")
-                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+
+                if hasSpendingData {
+                    Chart(monthlySpending) { point in
+                        AreaMark(
+                            x: .value("Month", point.month),
+                            y: .value("Spend", point.amount)
+                        )
+                        .foregroundStyle(
+                            LinearGradient(
+                                colors: [Color.appAccent.opacity(0.28), .clear],
+                                startPoint: .top, endPoint: .bottom))
+                        LineMark(
+                            x: .value("Month", point.month),
+                            y: .value("Spend", point.amount)
+                        )
+                        .foregroundStyle(Color.appAccent)
+                        .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                        PointMark(
+                            x: .value("Month", point.month),
+                            y: .value("Spend", point.amount)
+                        )
+                        .foregroundStyle(Color.appAccent)
+                    }
+                    .chartXAxis {
+                        AxisMarks(values: .stride(by: .month)) { _ in
+                            AxisGridLine().foregroundStyle(.clear)
+                            AxisValueLabel(format: .dateTime.month(.abbreviated))
+                                .font(.caption2)
+                        }
+                    }
+                    .chartYAxis {
+                        AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { value in
+                            AxisGridLine().foregroundStyle(Color.secondary.opacity(0.15))
+                            AxisValueLabel {
+                                if let amount = value.as(Double.self) {
+                                    Text(compactMoney(amount)).font(.caption2)
+                                }
+                            }
+                        }
+                    }
+                    .frame(height: 150)
+                } else {
+                    ContentUnavailableView(
+                        "No spending in the last 6 months",
+                        systemImage: "chart.line.downtrend.xyaxis",
+                        description: Text("Add fuel, maintenance, or expenses to start your trend."))
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 150)
+                }
+
+                Label(spendingInsight, systemImage: "calendar")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+
+                if let latest {
+                    HStack(spacing: 10) {
+                        Image(systemName: latest.symbol)
+                            .foregroundStyle(latest.tint)
+                            .frame(width: 34, height: 34)
+                            .background(latest.tint.opacity(0.11), in: Circle())
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Latest: \(latest.title)")
+                                .font(.caption.weight(.semibold)).lineLimit(1)
+                            Text(latest.subtitle)
+                                .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                        Spacer(minLength: 8)
+                        Text(latest.amount).font(.caption.weight(.bold)).monospacedDigit()
+                    }
+                }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    private func numericAmount(_ value: String) -> Double {
+        Double(value.filter { $0.isNumber || $0 == "." }) ?? 0
     }
 }
 
 struct GarageHeroCard: View {
     @EnvironmentObject private var store: AppStore
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let vehicle: Vehicle
     var onDetails: () -> Void
-    var onDocuments: () -> Void
     var body: some View {
         VStack(spacing: 0) {
             ZStack {
@@ -586,23 +599,11 @@ struct GarageHeroCard: View {
                     .fontWeight(.semibold)
                 }
                 .font(.subheadline)
-                let actionLayout =
-                    dynamicTypeSize.isAccessibilitySize
-                    ? AnyLayout(VStackLayout(spacing: 8))
-                    : AnyLayout(HStackLayout(spacing: 8))
-                actionLayout {
-                    Button(action: onDetails) {
-                        Label("View vehicle", systemImage: "car.side.fill")
-                            .frame(maxWidth: .infinity, minHeight: 48)
-                            .background(Color.appAccent, in: RoundedRectangle(cornerRadius: 12))
-                            .foregroundStyle(Color.appCanvas)
-                    }
-                    Button(action: onDocuments) {
-                        Label("Documents", systemImage: "doc.text")
-                            .frame(maxWidth: .infinity, minHeight: 48)
-                            .background(Color.appElevated, in: RoundedRectangle(cornerRadius: 12))
-                            .foregroundStyle(Color.appAccent)
-                    }
+                Button(action: onDetails) {
+                    Label("View vehicle details", systemImage: "car.side.fill")
+                        .frame(maxWidth: .infinity, minHeight: 48)
+                        .background(Color.appAccent, in: RoundedRectangle(cornerRadius: 12))
+                        .foregroundStyle(Color.appCanvas)
                 }
                 .font(.subheadline.weight(.semibold))
             }
@@ -628,7 +629,7 @@ struct GarageHeroCard: View {
 
     private var odometer: some View {
         HStack(spacing: 12) {
-            Image(systemName: "gauge.with.dots.needle.67")
+            Image(systemName: "gauge.with.dots.needle.67percent")
                 .font(.title3.weight(.semibold))
                 .foregroundStyle(Color.appAccent)
                 .frame(width: 48, height: 48)
@@ -878,7 +879,7 @@ struct VehicleListView: View {
         VStack(alignment: .leading, spacing: 13) {
             HStack(spacing: 8) {
                 Image(systemName: "chart.bar.fill").foregroundStyle(Color.appAccent)
-                Text("Garage summary").font(.system(size: 17, weight: .semibold))
+                Text("Garage summary").font(.appSectionTitle)
                 Spacer()
                 Text("\(store.vehicles.count) total")
                     .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
@@ -886,7 +887,14 @@ struct VehicleListView: View {
             VStack(spacing: 8) {
                 garageMetric("Vehicles", "\(store.vehicles.count)", "in your garage")
                 garageMetric("Fleet mileage", "\(fleetMileage.formatted()) km", "recorded")
-                garageMetric("Service due", "\(dueCount)", "date or mileage")
+                Button {
+                    withAnimation(.easeOut(duration: 0.2)) { filter = .due }
+                } label: {
+                    garageMetric("Service due", "\(dueCount)", "tap to show due vehicles")
+                }
+                .buttonStyle(.plain)
+                .disabled(dueCount == 0)
+                .accessibilityHint("Filters the garage to vehicles that need service")
             }
             HStack(spacing: 10) {
                 Image(systemName: "checkmark.shield.fill").foregroundStyle(Color.appAccent)
@@ -1033,21 +1041,37 @@ struct VehicleCard: View {
                 metricLayout {
                     vehicleMetric(
                         "CURRENT MILEAGE", "\(vehicle.mileage.formatted()) km",
-                        symbol: "gauge.with.dots.needle.67")
+                        symbol: "gauge.with.dots.needle.67percent")
                     vehicleMetric(
                         "NEXT SERVICE", vehicle.nextServiceDate.shortDate,
                         symbol: "wrench.fill")
                 }
 
-                Label(
-                    serviceMessage,
-                    systemImage: serviceDue ? "clock.badge.exclamationmark" : "calendar"
-                )
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(serviceDue ? Color.orange : Color.appAccent)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 10).padding(.vertical, 8)
-                .background(Color.appElevated, in: RoundedRectangle(cornerRadius: 8))
+                if serviceDue {
+                    NavigationLink {
+                        MaintenanceListView(vehicleID: vehicle.id)
+                    } label: {
+                        HStack {
+                            Label(serviceMessage, systemImage: "clock.badge.exclamationmark")
+                            Spacer(minLength: 8)
+                            Text("Review").font(.caption.weight(.semibold))
+                            Image(systemName: "chevron.right").font(.caption2.bold())
+                        }
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(Color.orange)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 10).frame(minHeight: 44)
+                        .background(Color.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    Label(serviceMessage, systemImage: "calendar")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(Color.appAccent)
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .padding(.horizontal, 10)
+                        .background(Color.appElevated, in: RoundedRectangle(cornerRadius: 8))
+                }
 
                 let actionLayout =
                     dynamicTypeSize.isAccessibilitySize
@@ -1132,8 +1156,10 @@ struct VehicleCard: View {
 
 struct VehicleDetailView: View {
     @EnvironmentObject private var store: AppStore
+    @Environment(\.dismiss) private var dismiss
     @State var vehicle: Vehicle
     @State private var showEdit = false
+    @State private var showDeleteConfirmation = false
     @State private var selectedPhoto: PhotosPickerItem?
     @State private var isUpdatingPhoto = false
     @State private var photoError: String?
@@ -1206,7 +1232,7 @@ struct VehicleDetailView: View {
                         VStack(spacing: 8) {
                             vehicleStat(
                                 "Mileage", "\(vehicle.mileage.formatted()) km",
-                                "gauge.with.dots.needle.67")
+                                "gauge.with.dots.needle.67percent")
                             vehicleStat("Fuel", vehicle.fuel, "fuelpump.fill")
                             vehicleStat(
                                 "Next service", "\(vehicle.distanceToService.formatted()) km",
@@ -1243,6 +1269,15 @@ struct VehicleDetailView: View {
                     }
                     .padding(16).background(Color.appCard, in: RoundedRectangle(cornerRadius: 17))
                 }
+                Button(role: .destructive) {
+                    showDeleteConfirmation = true
+                } label: {
+                    Label("Delete vehicle", systemImage: "trash")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity, minHeight: 50)
+                }
+                .buttonStyle(.bordered)
+                .tint(.red)
             }
             .padding(20)
             .frame(maxWidth: 900)
@@ -1253,6 +1288,17 @@ struct VehicleDetailView: View {
         .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Edit") { showEdit = true } } }
         .sheet(isPresented: $showEdit) {
             NavigationStack { EditVehicleView(vehicle: vehicle) { updated in vehicle = updated } }
+        }
+        .alert("Delete this vehicle?", isPresented: $showDeleteConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Delete", role: .destructive) {
+                store.deleteVehicle(vehicle)
+                dismiss()
+            }
+        } message: {
+            Text(
+                "This permanently removes the vehicle and its maintenance, fuel, expense, and document records."
+            )
         }
         .confirmationDialog("Vehicle photo", isPresented: $showPhotoActions) {
             Button("Choose from Library") { showPhotoLibrary = true }
@@ -1307,11 +1353,14 @@ struct AddVehicleView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var make = ""
     @State private var model = ""
-    @State private var year = "2024"
+    @State private var year = String(Calendar.current.component(.year, from: Date()))
     @State private var registration = ""
     @State private var mileage = ""
     @State private var vin = ""
     @State private var fuel = "Petrol"
+    @State private var lastServiceDate = Date()
+    @State private var serviceMileageInterval = 5_000
+    @State private var serviceMonthInterval = 6
     @State private var error: String?
     @State private var selectedPhoto: PhotosPickerItem?
     @State private var pendingPhoto: Data?
@@ -1320,76 +1369,249 @@ struct AddVehicleView: View {
     @State private var showPhotoActions = false
     @State private var showPhotoLibrary = false
     @State private var showCamera = false
+    @FocusState private var focusedField: AddVehicleField?
+
+    private enum AddVehicleField: Hashable {
+        case make, model, year, registration, mileage, vin
+    }
+
+    private var trimmedMake: String {
+        make.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var trimmedModel: String {
+        model.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var vehicleName: String {
+        let name = [trimmedMake, trimmedModel].filter { !$0.isEmpty }.joined(separator: " ")
+        return name.isEmpty ? "Your new vehicle" : name
+    }
+
+    private var isDuplicateVehicle: Bool {
+        store.hasDuplicateVehicle(registration: registration, vin: vin)
+    }
+
+    private var isFormValid: Bool {
+        let currentYear = Calendar.current.component(.year, from: Date())
+        guard let yearValue = Int(year), (1886...(currentYear + 1)).contains(yearValue),
+            let mileageValue = Int(mileage), mileageValue >= 0
+        else { return false }
+        return !isDuplicateVehicle && !trimmedMake.isEmpty && !trimmedModel.isEmpty
+            && !registration.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var calculatedNextServiceMileage: Int {
+        (Int(mileage) ?? 0) + serviceMileageInterval
+    }
+
+    private var calculatedNextServiceDate: Date {
+        Calendar.current.date(
+            byAdding: .month, value: serviceMonthInterval, to: lastServiceDate) ?? lastServiceDate
+    }
+
     var body: some View {
-        Form {
-            Section("Vehicle identity") {
-                TextField("Make", text: $make)
-                TextField("Model", text: $model)
-                TextField("Year", text: $year).keyboardType(.numberPad)
-                TextField("Registration number", text: $registration)
-                    .textInputAutocapitalization(.characters)
-                TextField("VIN (optional)", text: $vin)
-            }
-            Section("Vehicle details") {
-                TextField("Current mileage (km)", text: $mileage).keyboardType(.numberPad)
-                Picker("Fuel type", selection: $fuel) {
-                    ForEach(["Petrol", "Diesel", "Hybrid", "Electric"], id: \.self) { Text($0) }
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Label("NEW VEHICLE", systemImage: "sparkles")
+                        .font(.caption2.weight(.bold)).tracking(1.1)
+                        .foregroundStyle(Color.appAccent)
+                    Text("Add a vehicle to your garage")
+                        .font(.title2.weight(.bold))
+                    Text("Enter the basic details below. You can add more specifications later.")
+                        .font(.subheadline).foregroundStyle(.secondary)
                 }
-            }
-            Section("Vehicle photo") {
+
                 Button {
                     showPhotoActions = true
                 } label: {
-                    Group {
+                    ZStack(alignment: .bottomLeading) {
                         if let photoPreview {
-                            GeometryReader { geometry in
-                                Image(uiImage: photoPreview).resizable().scaledToFill()
-                                    .frame(width: geometry.size.width, height: geometry.size.height)
-                                    .clipped()
-                            }
+                            Image(uiImage: photoPreview).resizable().scaledToFill()
+                                .frame(maxWidth: .infinity).frame(height: 210).clipped()
                         } else {
-                            VStack(spacing: 9) {
-                                Image(systemName: "camera.fill").font(.title2)
-                                Text("Add vehicle photo").font(.subheadline.weight(.semibold))
-                                Text("Tap to take or choose a photo")
-                                    .font(.caption).foregroundStyle(.secondary)
+                            LinearGradient(
+                                colors: [Color.appAccent.opacity(0.24), Color.appMint],
+                                startPoint: .topLeading, endPoint: .bottomTrailing
+                            )
+                            .frame(height: 210)
+                            .overlay {
+                                Image(systemName: "car.side.fill")
+                                    .font(.system(size: 76, weight: .ultraLight))
+                                    .foregroundStyle(Color.appAccent)
                             }
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .foregroundStyle(Color.appAccent)
                         }
+                        LinearGradient(
+                            colors: [.clear, .black.opacity(photoPreview == nil ? 0.18 : 0.68)],
+                            startPoint: .center, endPoint: .bottom)
+                        VStack(alignment: .leading, spacing: 5) {
+                            Label(
+                                photoPreview == nil ? "Add a vehicle photo" : "Change photo",
+                                systemImage: "camera.fill"
+                            )
+                            .font(.subheadline.weight(.bold)).foregroundStyle(.white)
+                            Text(photoPreview == nil ? "Camera or photo library" : vehicleName)
+                                .font(.caption).foregroundStyle(.white.opacity(0.82))
+                        }
+                        .padding(16)
                     }
-                    .frame(maxWidth: .infinity).frame(height: 160)
-                    .background(Color.appMint, in: RoundedRectangle(cornerRadius: 12))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .overlay(alignment: .bottomTrailing) {
-                        if photoPreview != nil {
-                            Image(systemName: "camera.fill")
-                                .font(.system(size: 14, weight: .semibold))
-                                .foregroundStyle(.white)
-                                .frame(width: 34, height: 34)
-                                .background(Color.appAccent, in: Circle())
-                                .padding(10)
-                        }
+                    .frame(maxWidth: .infinity).frame(height: 210)
+                    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 22, style: .continuous)
+                            .strokeBorder(.white.opacity(0.18), lineWidth: 1)
                     }
                 }
                 .buttonStyle(.plain)
                 .disabled(isLoadingPhoto)
                 .accessibilityLabel(
                     pendingPhoto == nil ? "Add vehicle photo" : "Change vehicle photo")
-                if isLoadingPhoto { ProgressView("Preparing photo…") }
+
+                if isLoadingPhoto {
+                    HStack(spacing: 10) {
+                        ProgressView().tint(.appAccent)
+                        Text("Preparing your photo…")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 14) {
+                    formSectionTitle("Basic information", symbol: "car.side.fill")
+                    Text("Fields marked with * are required.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    vehicleField(
+                        "Vehicle brand *", placeholder: "e.g. Toyota", text: $make,
+                        symbol: "building.2", field: .make)
+                    vehicleField(
+                        "Vehicle model *", placeholder: "e.g. Corolla", text: $model,
+                        symbol: "car.rear", field: .model)
+                    HStack(spacing: 12) {
+                        vehicleField(
+                            "Year *", placeholder: "2026", text: $year,
+                            symbol: "calendar", field: .year, keyboard: .numberPad)
+                        vehicleField(
+                            "Registration *", placeholder: "CAA-1234", text: $registration,
+                            symbol: "rectangle.and.text.magnifyingglass", field: .registration,
+                            capitalization: .characters)
+                    }
+                    if isDuplicateVehicle {
+                        Label(
+                            "This vehicle is already in your garage.",
+                            systemImage: "exclamationmark.circle.fill"
+                        )
+                        .font(.caption.weight(.semibold)).foregroundStyle(.red)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                    }
+                }
+                .padding(16)
+                .background(Color.appCard, in: RoundedRectangle(cornerRadius: 20))
+
+                VStack(alignment: .leading, spacing: 14) {
+                    formSectionTitle("Driving details", symbol: "gauge.with.dots.needle.67percent")
+                    vehicleField(
+                        "Current mileage (km) *", placeholder: "e.g. 25000", text: $mileage,
+                        symbol: "road.lanes", field: .mileage, keyboard: .numberPad)
+                    Text("Fuel type").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                        ForEach(fuelOptions, id: \.name) { option in
+                            Button {
+                                withAnimation(.easeOut(duration: 0.18)) { fuel = option.name }
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Image(systemName: option.symbol)
+                                    Text(option.name).font(.subheadline.weight(.semibold))
+                                    Spacer(minLength: 0)
+                                    if fuel == option.name {
+                                        Image(systemName: "checkmark.circle.fill")
+                                    }
+                                }
+                                .foregroundStyle(fuel == option.name ? Color.appCanvas : .primary)
+                                .padding(.horizontal, 12).frame(minHeight: 48)
+                                .background(
+                                    fuel == option.name ? Color.appAccent : Color.appElevated,
+                                    in: RoundedRectangle(cornerRadius: 13))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    vehicleField(
+                        "VIN", placeholder: "Optional", text: $vin,
+                        symbol: "number", field: .vin, capitalization: .characters)
+                }
+                .padding(16)
+                .background(Color.appCard, in: RoundedRectangle(cornerRadius: 20))
+
+                VStack(alignment: .leading, spacing: 14) {
+                    formSectionTitle("Service schedule", symbol: "wrench.and.screwdriver.fill")
+                    Text("We use these details to calculate your next service reminder.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    DatePicker(
+                        "Last service date", selection: $lastServiceDate, in: ...Date(),
+                        displayedComponents: .date)
+                    Divider()
+                    Picker("Service every", selection: $serviceMileageInterval) {
+                        ForEach([5_000, 7_500, 10_000, 15_000], id: \.self) { distance in
+                            Text("\(distance.formatted()) km").tag(distance)
+                        }
+                    }
+                    Picker("Time interval", selection: $serviceMonthInterval) {
+                        Text("3 months").tag(3)
+                        Text("6 months").tag(6)
+                        Text("12 months").tag(12)
+                    }
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: "bell.badge.fill").foregroundStyle(Color.appAccent)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Next service")
+                                .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                            Text(
+                                "\(calculatedNextServiceDate.shortDate) or at \(calculatedNextServiceMileage.formatted()) km"
+                            )
+                            .font(.subheadline.weight(.semibold))
+                        }
+                    }
+                    .padding(13).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.appAccent.opacity(0.1), in: RoundedRectangle(cornerRadius: 14))
+                }
+                .padding(16)
+                .background(Color.appCard, in: RoundedRectangle(cornerRadius: 20))
+
+                if let error {
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                        .font(.subheadline).foregroundStyle(.red)
+                        .padding(14).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 14))
+                }
             }
-            if let error { Text(error).foregroundStyle(.red) }
-            Section {
-                Button("Save vehicle") { save() }
-                    .disabled(
-                        isLoadingPhoto || make.isEmpty || model.isEmpty || registration.isEmpty
-                            || mileage.isEmpty)
+            .padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 110)
+            .frame(maxWidth: 720).frame(maxWidth: .infinity)
+        }
+        .background(Color.appCanvas.ignoresSafeArea())
+        .navigationTitle("Add vehicle").navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) { Button("Cancel") { dismiss() } }
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Done") { focusedField = nil }
             }
         }
-        .frame(maxWidth: 720)
-        .frame(maxWidth: .infinity)
-        .navigationTitle("Add vehicle").navigationBarTitleDisplayMode(.inline)
-        .toolbar { ToolbarItem(placement: .topBarLeading) { Button("Cancel") { dismiss() } } }
+        .safeAreaInset(edge: .bottom) {
+            Button {
+                focusedField = nil
+                save()
+            } label: {
+                HStack(spacing: 9) {
+                    Image(systemName: "plus.circle.fill")
+                    Text("Add to my garage")
+                }
+            }
+            .buttonStyle(PrimaryButtonStyle())
+            .disabled(isLoadingPhoto || !isFormValid)
+            .opacity(isLoadingPhoto || !isFormValid ? 0.5 : 1)
+            .padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 6)
+            .background(.bar)
+        }
         .confirmationDialog("Vehicle photo", isPresented: $showPhotoActions) {
             Button("Choose from Library") { showPhotoLibrary = true }
             if UIImagePickerController.isSourceTypeAvailable(.camera) {
@@ -1429,6 +1651,53 @@ struct AddVehicleView: View {
         }
     }
 
+    private var fuelOptions: [(name: String, symbol: String)] {
+        [
+            ("Petrol", "fuelpump.fill"), ("Diesel", "drop.fill"),
+            ("Hybrid", "leaf.fill"), ("Electric", "bolt.fill"),
+        ]
+    }
+
+    private func formSectionTitle(_ title: String, symbol: String) -> some View {
+        HStack(spacing: 9) {
+            Image(systemName: symbol).foregroundStyle(Color.appAccent)
+                .frame(width: 32, height: 32)
+                .background(Color.appAccent.opacity(0.12), in: Circle())
+            Text(title).font(.headline)
+        }
+    }
+
+    private func vehicleField(
+        _ title: String,
+        placeholder: String,
+        text: Binding<String>,
+        symbol: String,
+        field: AddVehicleField,
+        keyboard: UIKeyboardType = .default,
+        capitalization: TextInputAutocapitalization = .words
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            HStack(spacing: 9) {
+                Image(systemName: symbol).foregroundStyle(Color.appAccent).frame(width: 20)
+                TextField(placeholder, text: text)
+                    .focused($focusedField, equals: field)
+                    .keyboardType(keyboard)
+                    .textInputAutocapitalization(capitalization)
+                    .autocorrectionDisabled()
+            }
+            .padding(.horizontal, 12).frame(minHeight: 48)
+            .background(Color.appElevated, in: RoundedRectangle(cornerRadius: 13))
+            .overlay {
+                RoundedRectangle(cornerRadius: 13)
+                    .strokeBorder(
+                        focusedField == field ? Color.appAccent : Color.clear,
+                        lineWidth: 1.5)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     private func preparePhoto(_ data: Data) async {
         isLoadingPhoto = true
         defer { isLoadingPhoto = false }
@@ -1441,22 +1710,36 @@ struct AddVehicleView: View {
     }
 
     private func save() {
-        guard let yearValue = Int(year), let mileageValue = Int(mileage) else {
+        let currentYear = Calendar.current.component(.year, from: Date())
+        guard let yearValue = Int(year), (1886...(currentYear + 1)).contains(yearValue),
+            let mileageValue = Int(mileage), mileageValue >= 0
+        else {
             error = "Enter a valid year and mileage."
             return
         }
+        guard !isDuplicateVehicle else {
+            error = "This vehicle is already in your garage."
+            return
+        }
         let vehicle = Vehicle(
-            make: make, model: model, year: yearValue, registration: registration.uppercased(),
+            make: trimmedMake, model: trimmedModel, year: yearValue,
+            registration: registration.trimmingCharacters(in: .whitespacesAndNewlines).uppercased(),
             mileage: mileageValue, fuel: fuel, color: "Not specified", image: "car.side.fill",
-            nextServiceMileage: mileageValue + 5000,
-            nextServiceDate: Calendar.current.date(byAdding: .month, value: 6, to: Date())!,
-            vin: vin, engine: "Not specified", transmission: "Not specified")
+            nextServiceMileage: mileageValue + serviceMileageInterval,
+            nextServiceDate: calculatedNextServiceDate,
+            vin: vin.trimmingCharacters(in: .whitespacesAndNewlines).uppercased(),
+            engine: "Not specified", transmission: "Not specified",
+            serviceMileageInterval: serviceMileageInterval,
+            serviceMonthInterval: serviceMonthInterval)
         do {
             if let pendingPhoto {
                 try store.setPreparedVehiclePhoto(pendingPhoto, vehicleID: vehicle.id)
             }
-            store.addVehicle(vehicle)
-            dismiss()
+            if store.addVehicle(vehicle) {
+                dismiss()
+            } else {
+                error = "This vehicle is already in your garage."
+            }
         } catch { self.error = error.localizedDescription }
     }
 }
@@ -1465,12 +1748,26 @@ struct EditVehicleView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
     @State var vehicle: Vehicle
+    @State private var error: String?
     var onSave: (Vehicle) -> Void
+
+    private var serviceMileageInterval: Binding<Int> {
+        Binding(
+            get: { vehicle.serviceMileageInterval ?? 5_000 },
+            set: { vehicle.serviceMileageInterval = $0 })
+    }
+
+    private var serviceMonthInterval: Binding<Int> {
+        Binding(
+            get: { vehicle.serviceMonthInterval ?? 6 },
+            set: { vehicle.serviceMonthInterval = $0 })
+    }
+
     var body: some View {
         Form {
             Section("Vehicle") {
-                TextField("Make", text: $vehicle.make)
-                TextField("Model", text: $vehicle.model)
+                TextField("Vehicle brand", text: $vehicle.make)
+                TextField("Vehicle model", text: $vehicle.model)
                 TextField("Year", value: $vehicle.year, format: .number).keyboardType(.numberPad)
                 TextField("Registration", text: $vehicle.registration)
                 TextField("VIN", text: $vehicle.vin)
@@ -1485,6 +1782,16 @@ struct EditVehicleView: View {
                 DatePicker(
                     "Next service date", selection: $vehicle.nextServiceDate,
                     displayedComponents: .date)
+                Picker("Service distance interval", selection: serviceMileageInterval) {
+                    ForEach([5_000, 7_500, 10_000, 15_000], id: \.self) { distance in
+                        Text("\(distance.formatted()) km").tag(distance)
+                    }
+                }
+                Picker("Service time interval", selection: serviceMonthInterval) {
+                    Text("3 months").tag(3)
+                    Text("6 months").tag(6)
+                    Text("12 months").tag(12)
+                }
             }
             Section("Specifications") {
                 TextField("Fuel", text: $vehicle.fuel)
@@ -1492,15 +1799,45 @@ struct EditVehicleView: View {
                 TextField("Engine", text: $vehicle.engine)
                 TextField("Transmission", text: $vehicle.transmission)
             }
+            if let error { Text(error).foregroundStyle(.red) }
             Section {
                 Button("Save changes") {
-                    store.updateVehicle(vehicle)
-                    onSave(vehicle)
-                    dismiss()
+                    save()
                 }
             }
         }
         .navigationTitle("Edit vehicle").navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func save() {
+        let currentYear = Calendar.current.component(.year, from: Date())
+        guard !vehicle.make.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            !vehicle.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            !vehicle.registration.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            (1886...(currentYear + 1)).contains(vehicle.year), vehicle.mileage >= 0
+        else {
+            error = "Enter valid vehicle details and mileage."
+            return
+        }
+        let recordedMileage = store.highestRecordedMileage(vehicleID: vehicle.id)
+        guard vehicle.mileage >= recordedMileage else {
+            error = "Mileage cannot be below the recorded history of \(recordedMileage.formatted()) km."
+            return
+        }
+        guard !store.hasDuplicateVehicle(
+            registration: vehicle.registration, vin: vehicle.vin, excluding: vehicle.id)
+        else {
+            error = "Another vehicle already uses this registration or VIN."
+            return
+        }
+        vehicle.make = vehicle.make.trimmingCharacters(in: .whitespacesAndNewlines)
+        vehicle.model = vehicle.model.trimmingCharacters(in: .whitespacesAndNewlines)
+        vehicle.registration = vehicle.registration.trimmingCharacters(in: .whitespacesAndNewlines)
+            .uppercased()
+        vehicle.vin = vehicle.vin.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        store.updateVehicle(vehicle)
+        onSave(vehicle)
+        dismiss()
     }
 }
 

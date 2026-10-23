@@ -28,6 +28,49 @@ struct SessionUser: Equatable {
     let id: String
     let displayName: String?
     let email: String?
+    let isEmailVerified: Bool
+    let requiresEmailVerification: Bool
+}
+
+enum AuthenticationServiceError: LocalizedError {
+    case invalidEmail
+    case wrongCredentials
+    case emailAlreadyInUse
+    case weakPassword
+    case emailNotVerified
+    case userDisabled
+    case tooManyRequests
+    case networkUnavailable
+    case operationNotAllowed
+    case secureStorageUnavailable
+    case accountCreationFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidEmail:
+            "Enter a valid email address."
+        case .wrongCredentials:
+            "The email or password is incorrect."
+        case .emailAlreadyInUse:
+            "An account already exists for this email. Try signing in instead."
+        case .weakPassword:
+            "Use a stronger password with at least 6 characters."
+        case .emailNotVerified:
+            "Verify your email before signing in. We sent you a new verification link."
+        case .userDisabled:
+            "This account has been disabled. Contact support for help."
+        case .tooManyRequests:
+            "Too many attempts. Wait a moment and try again."
+        case .networkUnavailable:
+            "Check your internet connection and try again."
+        case .operationNotAllowed:
+            "This sign-in method is not enabled for the Firebase project."
+        case .secureStorageUnavailable:
+            "Secure sign-in storage is unavailable. Close and reopen the app, then try again."
+        case .accountCreationFailed:
+            "We could not finish creating the account. No incomplete account was kept."
+        }
+    }
 }
 
 enum PhotoLoadResult {
@@ -39,8 +82,9 @@ enum PhotoLoadResult {
 protocol AuthenticationServicing {
     var currentUser: SessionUser? { get }
     func observeChanges(_ onChange: @escaping (SessionUser?) -> Void) -> ObservationToken
-    func register(email: String, password: String, name: String) async throws -> SessionUser
+    func register(email: String, password: String, name: String) async throws
     func signIn(email: String, password: String) async throws
+    func sendPasswordReset(email: String) async throws
     func signInWithGoogle(idToken: String, accessToken: String) async throws
     func signInWithApple(
         credential: ASAuthorizationAppleIDCredential, rawNonce: String
@@ -88,6 +132,17 @@ protocol GarageRemoteRepository {
         postID: UUID, onChange: @escaping (Result<[CommunityComment], Error>) -> Void
     ) -> ObservationToken
     func publishComment(_ comment: CommunityComment, postID: UUID, userID: String) async throws
+    func deleteComment(id: UUID, postID: UUID, userID: String) async throws
+    func observeCommunityNotifications(
+        userID: String,
+        onChange: @escaping (Result<[CommunityNotification], Error>) -> Void
+    ) -> ObservationToken
+    func publishCommunityNotification(
+        _ notification: CommunityNotification,
+        recipientID: String,
+        actorID: String
+    ) async throws
+    func markCommunityNotificationRead(id: String, userID: String) async throws
     func saveMessagingRegistration(_ installationID: String, userID: String) async throws
     func removeMessagingRegistration(_ installationID: String, userID: String) async throws
 }
@@ -202,22 +257,64 @@ private struct FirebaseAuthenticationService: AuthenticationServicing {
         return ObservationToken { Auth.auth().removeStateDidChangeListener(handle) }
     }
 
-    func register(email: String, password: String, name: String) async throws -> SessionUser {
-        let result = try await Auth.auth().createUser(withEmail: email, password: password)
-        let change = result.user.createProfileChangeRequest()
-        change.displayName = name
-        try await change.commitChanges()
-        return Self.sessionUser(result.user)
+    func register(email: String, password: String, name: String) async throws {
+        let result: AuthDataResult
+        do {
+            result = try await Auth.auth().createUser(withEmail: email, password: password)
+        } catch {
+            throw Self.displayError(for: error)
+        }
+
+        do {
+            let change = result.user.createProfileChangeRequest()
+            change.displayName = name
+            try await change.commitChanges()
+            try await result.user.sendEmailVerification()
+            try Auth.auth().signOut()
+        } catch {
+            // Account creation is a multi-step operation. Roll back a user that
+            // cannot be fully prepared so the email is not left unusable.
+            try? await result.user.delete()
+            try? Auth.auth().signOut()
+            let mapped = Self.displayError(for: error)
+            if mapped is AuthenticationServiceError { throw mapped }
+            throw AuthenticationServiceError.accountCreationFailed
+        }
     }
 
     func signIn(email: String, password: String) async throws {
-        _ = try await Auth.auth().signIn(withEmail: email, password: password)
+        do {
+            let result = try await Auth.auth().signIn(withEmail: email, password: password)
+            guard result.user.isEmailVerified else {
+                try? await result.user.sendEmailVerification()
+                try? Auth.auth().signOut()
+                throw AuthenticationServiceError.emailNotVerified
+            }
+        } catch {
+            if let error = error as? AuthenticationServiceError { throw error }
+            throw Self.displayError(for: error)
+        }
+    }
+
+    func sendPasswordReset(email: String) async throws {
+        do {
+            try await Auth.auth().sendPasswordReset(withEmail: email)
+        } catch {
+            // Keep the response account-enumeration safe. The UI displays the
+            // same confirmation whether or not an account exists.
+            if AuthErrorCode(rawValue: (error as NSError).code) == .userNotFound { return }
+            throw Self.displayError(for: error)
+        }
     }
 
     func signInWithGoogle(idToken: String, accessToken: String) async throws {
         let credential = GoogleAuthProvider.credential(
             withIDToken: idToken, accessToken: accessToken)
-        _ = try await Auth.auth().signIn(with: credential)
+        do {
+            _ = try await Auth.auth().signIn(with: credential)
+        } catch {
+            throw Self.displayError(for: error)
+        }
     }
 
     func signInWithApple(
@@ -228,7 +325,11 @@ private struct FirebaseAuthenticationService: AuthenticationServicing {
         else { throw BackendError.appleTokenMissing }
         let firebaseCredential = OAuthProvider.appleCredential(
             withIDToken: token, rawNonce: rawNonce, fullName: credential.fullName)
-        _ = try await Auth.auth().signIn(with: firebaseCredential)
+        do {
+            _ = try await Auth.auth().signIn(with: firebaseCredential)
+        } catch {
+            throw Self.displayError(for: error)
+        }
     }
 
     func updateDisplayName(_ name: String) async throws -> SessionUser? {
@@ -236,13 +337,46 @@ private struct FirebaseAuthenticationService: AuthenticationServicing {
         let change = user.createProfileChangeRequest()
         change.displayName = name
         try await change.commitChanges()
+        _ = try await user.getIDTokenResult(forcingRefresh: true)
         return Self.sessionUser(user)
     }
 
     func signOut() throws { try Auth.auth().signOut() }
 
     private static func sessionUser(_ user: FirebaseAuth.User) -> SessionUser {
-        SessionUser(id: user.uid, displayName: user.displayName, email: user.email)
+        SessionUser(
+            id: user.uid,
+            displayName: user.displayName,
+            email: user.email,
+            isEmailVerified: user.isEmailVerified,
+            requiresEmailVerification: user.providerData.contains { $0.providerID == "password" }
+        )
+    }
+
+    private static func displayError(for error: Error) -> Error {
+        guard let code = AuthErrorCode(rawValue: (error as NSError).code) else { return error }
+        switch code {
+        case .invalidEmail:
+            return AuthenticationServiceError.invalidEmail
+        case .wrongPassword, .userNotFound, .invalidCredential:
+            return AuthenticationServiceError.wrongCredentials
+        case .emailAlreadyInUse:
+            return AuthenticationServiceError.emailAlreadyInUse
+        case .weakPassword:
+            return AuthenticationServiceError.weakPassword
+        case .userDisabled:
+            return AuthenticationServiceError.userDisabled
+        case .tooManyRequests:
+            return AuthenticationServiceError.tooManyRequests
+        case .networkError:
+            return AuthenticationServiceError.networkUnavailable
+        case .operationNotAllowed:
+            return AuthenticationServiceError.operationNotAllowed
+        case .keychainError:
+            return AuthenticationServiceError.secureStorageUnavailable
+        default:
+            return error
+        }
     }
 }
 
@@ -372,6 +506,32 @@ private struct FirebaseGarageRepository: GarageRemoteRepository {
 
     func publishComment(_ comment: CommunityComment, postID: UUID, userID: String) async throws {
         try await FirebaseBackend.publishComment(comment, postID: postID, userID: userID)
+    }
+
+    func deleteComment(id: UUID, postID: UUID, userID: String) async throws {
+        try await FirebaseBackend.deleteComment(id: id, postID: postID, userID: userID)
+    }
+
+    func observeCommunityNotifications(
+        userID: String,
+        onChange: @escaping (Result<[CommunityNotification], Error>) -> Void
+    ) -> ObservationToken {
+        let listener = FirebaseBackend.observeCommunityNotifications(
+            userID: userID, onChange: onChange)
+        return ObservationToken { listener.remove() }
+    }
+
+    func publishCommunityNotification(
+        _ notification: CommunityNotification,
+        recipientID: String,
+        actorID: String
+    ) async throws {
+        try await FirebaseBackend.publishCommunityNotification(
+            notification, recipientID: recipientID, actorID: actorID)
+    }
+
+    func markCommunityNotificationRead(id: String, userID: String) async throws {
+        try await FirebaseBackend.markCommunityNotificationRead(id: id, userID: userID)
     }
 
     func saveMessagingRegistration(_ installationID: String, userID: String) async throws {

@@ -14,6 +14,9 @@ struct OnboardingWizardView: View {
     @State private var registration = ""
     @State private var mileage = ""
     @State private var fuel = "Petrol"
+    @State private var lastServiceDate = Date()
+    @State private var serviceMileageInterval = 5_000
+    @State private var serviceMonthInterval = 6
     @State private var scanPresented = false
     @State private var scanImage: UIImage?
     @State private var recognizedText = ""
@@ -39,7 +42,7 @@ struct OnboardingWizardView: View {
                     VStack(alignment: .leading, spacing: 20) {
                         VStack(alignment: .leading, spacing: 6) {
                             Text(["A little about you", "Your vehicle", "Make it yours"][step])
-                                .font(.system(size: 28, weight: .bold, design: .rounded))
+                                .font(.appScreenTitle)
                             Text(
                                 [
                                     "Confirm your details and optionally scan your NIC.",
@@ -130,8 +133,8 @@ struct OnboardingWizardView: View {
     }
     private var vehicleStep: some View {
         VStack(spacing: 14) {
-            FormField(title: "Make", text: $vehicleMake)
-            FormField(title: "Model", text: $vehicleModel)
+            FormField(title: "Vehicle brand", text: $vehicleMake)
+            FormField(title: "Vehicle model", text: $vehicleModel)
             FormField(title: "Year", text: $year, keyboard: .numberPad)
             FormField(title: "Registration", text: $registration, placeholder: "ABC-1234")
             FormField(title: "Current mileage (km)", text: $mileage, keyboard: .numberPad)
@@ -139,6 +142,27 @@ struct OnboardingWizardView: View {
                 ForEach(["Petrol", "Diesel", "Hybrid", "Electric"], id: \.self) { Text($0) }
             }
             .pickerStyle(.segmented)
+            SurfaceCard {
+                VStack(alignment: .leading, spacing: 12) {
+                    Label("Service schedule", systemImage: "wrench.and.screwdriver.fill")
+                        .font(.subheadline.bold())
+                    Text("Choose when this vehicle normally needs its next service.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    DatePicker(
+                        "Last service", selection: $lastServiceDate, in: ...Date(),
+                        displayedComponents: .date)
+                    Picker("Distance", selection: $serviceMileageInterval) {
+                        ForEach([5_000, 7_500, 10_000, 15_000], id: \.self) { distance in
+                            Text("\(distance.formatted()) km").tag(distance)
+                        }
+                    }
+                    Picker("Time", selection: $serviceMonthInterval) {
+                        Text("3 months").tag(3)
+                        Text("6 months").tag(6)
+                        Text("12 months").tag(12)
+                    }
+                }
+            }
         }
     }
     private var preferencesStep: some View {
@@ -190,9 +214,10 @@ struct OnboardingWizardView: View {
             step = 1
         } else if step == 1 {
             guard !vehicleMake.isEmpty, !vehicleModel.isEmpty, !registration.isEmpty,
-                Int(mileage) != nil, Int(year) != nil
+                let mileageValue = Int(mileage), mileageValue >= 0,
+                let yearValue = Int(year), (1886...(Calendar.current.component(.year, from: Date()) + 1)).contains(yearValue)
             else {
-                error = "Enter vehicle make, model, year, registration, and mileage."
+                error = "Enter a valid vehicle brand, model, year, registration, and mileage."
                 return
             }
             step = 2
@@ -205,9 +230,12 @@ struct OnboardingWizardView: View {
             make: vehicleMake, model: vehicleModel, year: Int(year) ?? 2022,
             registration: registration.uppercased(), mileage: Int(mileage) ?? 0, fuel: fuel,
             color: "Not specified", image: "car.side.fill",
-            nextServiceMileage: (Int(mileage) ?? 0) + 5000,
-            nextServiceDate: Calendar.current.date(byAdding: .month, value: 6, to: Date())!,
-            vin: "", engine: "Not specified", transmission: "Not specified")
+            nextServiceMileage: (Int(mileage) ?? 0) + serviceMileageInterval,
+            nextServiceDate: Calendar.current.date(
+                byAdding: .month, value: serviceMonthInterval, to: lastServiceDate) ?? lastServiceDate,
+            vin: "", engine: "Not specified", transmission: "Not specified",
+            serviceMileageInterval: serviceMileageInterval,
+            serviceMonthInterval: serviceMonthInterval)
         if wantsBiometrics {
             guard !isEnablingBiometrics else { return }
             isEnablingBiometrics = true

@@ -67,124 +67,255 @@ struct ExploreView: View {
 struct MarketplaceView: View {
     @EnvironmentObject private var store: AppStore
     @State private var query = ""
-    @State private var category = "Vehicles"
+    @AppStorage("smart-vehicle-marketplace-category") private var category = "Vehicles"
     @State private var showFilters = false
-    @State private var filterMake = "All makes"
+    @AppStorage("smart-vehicle-marketplace-make") private var filterMake = "All makes"
     @State private var maxPrice = 30000000.0
     @State private var hasPriceLimit = false
     @State private var showNewListing = false
-    @State private var showOnlyMine = false
+    @State private var listingMode = "Browse"
+    private let listingColumns = [
+        GridItem(.adaptive(minimum: 155, maximum: 260), spacing: 12, alignment: .top)
+    ]
     init(showMyListings: Bool = false) {
-        _showOnlyMine = State(initialValue: showMyListings)
+        _listingMode = State(initialValue: showMyListings ? "My listings" : "Browse")
     }
     private let categories = ["Vehicles", "Spare parts"]
     private let demoItems = [
         MarketplaceItem(
+            id: UUID(uuidString: "E4ECA3D2-90DB-4D42-9A95-20E24C520001")!,
             title: "Toyota Aqua G", subtitle: "2021 · Hybrid · 38,000 km", price: "LKR 8,950,000",
             category: "Vehicles", symbol: "car.side.fill", tint: "blue", distance: "Colombo"),
         MarketplaceItem(
+            id: UUID(uuidString: "E4ECA3D2-90DB-4D42-9A95-20E24C520002")!,
             title: "Honda Vezel RS", subtitle: "2020 · Hybrid · 52,000 km", price: "LKR 14,250,000",
             category: "Vehicles", symbol: "car.side.fill", tint: "purple", distance: "Nugegoda"),
         MarketplaceItem(
+            id: UUID(uuidString: "E4ECA3D2-90DB-4D42-9A95-20E24C520003")!,
             title: "Toyota Corolla Axio", subtitle: "2019 · Petrol · 61,000 km",
             price: "LKR 7,800,000", category: "Vehicles", symbol: "car.side.fill", tint: "teal",
             distance: "Kandy"),
         MarketplaceItem(
+            id: UUID(uuidString: "E4ECA3D2-90DB-4D42-9A95-20E24C520004")!,
             title: "Premium oil filter · 04152", subtitle: "Toyota Corolla · Genuine fit",
             price: "LKR 4,250", category: "Spare parts", symbol: "gearshape.2.fill", tint: "orange",
             distance: "Colombo 05"),
         MarketplaceItem(
+            id: UUID(uuidString: "E4ECA3D2-90DB-4D42-9A95-20E24C520005")!,
             title: "Michelin Energy XM2+", subtitle: "185/65 R15 · Set of 4", price: "LKR 112,000",
             category: "Spare parts", symbol: "circle.dashed", tint: "pink", distance: "Rajagiriya"),
     ]
     private var items: [MarketplaceItem] {
         store.isFirebaseConfigured ? store.marketplaceItems : demoItems
     }
+    private var effectiveShowOnlyMine: Bool {
+        store.isFirebaseConfigured && listingMode == "My listings"
+    }
+    private var availableMakes: [String] {
+        let makes = items.filter { $0.category == "Vehicles" }.compactMap {
+            $0.title.split(separator: " ").first.map(String.init)
+        }
+        return ["All makes"] + Set(makes).sorted()
+    }
+    private var maximumFilterPrice: Double {
+        let highest = items.filter { $0.category == category }.map(\.priceAmount).max() ?? 0
+        let floor = category == "Vehicles" ? 30_000_000 : 500_000
+        let step = category == "Vehicles" ? 500_000 : 1_000
+        return Double(max(floor, ((highest + step - 1) / step) * step))
+    }
     private var visible: [MarketplaceItem] {
         items.filter {
             $0.category == category
-                && (showOnlyMine
-                    ? $0.sellerID == store.currentUserID
-                    : $0.sellerID != store.currentUserID)
+                && (!effectiveShowOnlyMine || $0.sellerID == store.currentUserID)
+                && (listingMode != "Saved" || store.isListingSaved($0))
                 && (query.isEmpty || $0.title.localizedCaseInsensitiveContains(query)
                     || $0.subtitle.localizedCaseInsensitiveContains(query))
-                && (filterMake == "All makes"
+                && (category != "Vehicles" || filterMake == "All makes"
                     || $0.title.localizedCaseInsensitiveContains(filterMake))
                 && (!hasPriceLimit || Double($0.priceAmount) <= maxPrice)
         }
     }
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 17) {
-                HStack {
-                    ScreenHeading(title: "Marketplace", subtitle: "Find your next great fit")
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .center, spacing: 12) {
+                    ScreenHeading(
+                        title: "Marketplace",
+                        subtitle: "Vehicles, genuine parts & owner listings"
+                    )
                     if store.isFirebaseConfigured {
-                        IconButton(symbol: "plus", accessibilityLabel: "Create marketplace listing") {
-                            showNewListing = true
-                        }
-                    }
-                    IconButton(symbol: "slider.horizontal.3", accessibilityLabel: "Marketplace filters") {
-                        showFilters = true
-                    }
-                        .padding(.trailing, 20)
-                }
-                HStack(spacing: 10) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("Search vehicles or parts", text: $query).autocorrectionDisabled()
-                    if !query.isEmpty {
                         Button {
-                            query = ""
+                            showNewListing = true
                         } label: {
-                            Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary)
+                            Image(systemName: "plus")
+                                .font(.system(size: 17, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .frame(width: 44, height: 44)
+                                .background(
+                                    Color.marketplaceBlue,
+                                    in: RoundedRectangle(cornerRadius: 13, style: .continuous)
+                                )
+                                .shadow(color: Color.marketplaceBlue.opacity(0.24), radius: 7, y: 3)
                         }
-                        .accessibilityLabel("Clear marketplace search")
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Create marketplace listing")
+                        .padding(.trailing, 16)
                     }
                 }
-                .padding(13).background(Color.appCard, in: RoundedRectangle(cornerRadius: 14))
-                .padding(.horizontal, 20)
+
+                HStack(spacing: 8) {
+                    HStack(spacing: 10) {
+                        Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                        TextField("Search vehicles, parts or brands", text: $query)
+                            .autocorrectionDisabled()
+                        if !query.isEmpty {
+                            Button {
+                                query = ""
+                            } label: {
+                                Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Clear marketplace search")
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .frame(height: 44)
+                    .background(Color.appCard, in: RoundedRectangle(cornerRadius: 12))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 12)
+                            .strokeBorder(Color.primary.opacity(0.07), lineWidth: 1)
+                    }
+
+                    Button {
+                        showFilters = true
+                    } label: {
+                        Image(systemName: "slider.horizontal.3")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(.primary)
+                            .frame(width: 44, height: 44)
+                            .background(Color.appCard, in: RoundedRectangle(cornerRadius: 12))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 12)
+                                    .strokeBorder(Color.primary.opacity(0.07), lineWidth: 1)
+                            }
+                            .overlay(alignment: .topTrailing) {
+                                if filterMake != "All makes" || hasPriceLimit {
+                                    Circle().fill(Color.marketplaceBlue).frame(width: 8, height: 8)
+                                        .padding(7)
+                                }
+                            }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Marketplace filters")
+                }
+                .padding(.horizontal, 16)
+
                 Picker("Category", selection: $category) {
                     ForEach(categories, id: \.self) { Text($0).tag($0) }
                 }
-                .pickerStyle(.segmented).padding(.horizontal, 20)
-                if store.isFirebaseConfigured {
-                    Picker("Listings", selection: $showOnlyMine) {
-                        Text("Browse").tag(false)
-                        Text("My listings").tag(true)
+                .pickerStyle(.segmented).padding(.horizontal, 16)
+                Picker("Listings", selection: $listingMode) {
+                    Text("Browse").tag("Browse")
+                    Text("Saved").tag("Saved")
+                    if store.isFirebaseConfigured {
+                        Text("My listings").tag("My listings")
                     }
-                    .pickerStyle(.segmented).padding(.horizontal, 20)
+                }
+                .pickerStyle(.segmented).padding(.horizontal, 16)
+
+                if filterMake != "All makes" || hasPriceLimit {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            if filterMake != "All makes" {
+                                MarketplaceFilterChip(title: filterMake, symbol: "car.side.fill") {
+                                    filterMake = "All makes"
+                                }
+                            }
+                            if hasPriceLimit {
+                                MarketplaceFilterChip(
+                                    title: "Up to LKR \(Int(maxPrice).formatted())",
+                                    symbol: "banknote.fill"
+                                ) { hasPriceLimit = false }
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                    }
                 }
                 if !store.isFirebaseConfigured {
                     Label("Demo listings are only shown on this device.", systemImage: "info.circle")
-                        .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 20)
+                        .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 16)
                 }
                 HStack {
-                    SectionHeading(
-                        title: showOnlyMine ? "My listings"
-                            : (category == "Vehicles" ? "Featured vehicles" : "Popular parts"))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(
+                            effectiveShowOnlyMine ? "My listings"
+                                : listingMode == "Saved" ? "Saved listings"
+                                : (category == "Vehicles" ? "Featured vehicles" : "Popular parts")
+                        )
+                        .font(.subheadline.weight(.semibold))
+                        Text(category == "Vehicles" ? "Available near you" : "Parts shared by owners")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
                     Spacer()
-                    Text("\(visible.count) results").font(.caption).foregroundStyle(.secondary)
+                    Text("\(visible.count) results")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(Color.marketplaceBlue)
+                        .padding(.horizontal, 9).padding(.vertical, 5)
+                        .background(Color.marketplaceBlue.opacity(0.11), in: Capsule())
                 }
-                .padding(.horizontal, 20)
+                .padding(.horizontal, 16)
                 if visible.isEmpty {
                     EmptyStateView(
                         symbol: "magnifyingglass",
-                        title: showOnlyMine ? "No listings here" : (items.isEmpty ? "No listings yet" : "No results found"),
-                        message: showOnlyMine ? "Your published listings appear here. Try the other category or create a listing."
+                        title: effectiveShowOnlyMine ? "No listings here"
+                            : listingMode == "Saved" ? "No saved listings"
+                            : (items.isEmpty ? "No listings yet" : "No results found"),
+                        message: effectiveShowOnlyMine ? "Your published listings appear here. Try the other category or create a listing."
+                            : listingMode == "Saved"
+                            ? "Tap the heart on a listing to keep it here."
                             : items.isEmpty
                             ? "Listings from other drivers will appear here when they publish."
-                            : "Try a different search or clear your filters.")
-                } else {
-                    LazyVStack(spacing: 12) {
-                        ForEach(visible) { item in
-                            NavigationLink {
-                                ListingDetailView(item: item)
-                            } label: {
-                                ListingCard(item: item)
-                            }
-                            .buttonStyle(.plain)
+                            : "Try a different search or clear your filters.",
+                        action: items.isEmpty ? "Create listing" : "Clear filters"
+                    ) {
+                        if items.isEmpty {
+                            showNewListing = true
+                        } else {
+                            query = ""
+                            filterMake = "All makes"
+                            hasPriceLimit = false
+                            listingMode = "Browse"
                         }
                     }
-                    .padding(.horizontal, 20)
+                } else {
+                    LazyVGrid(columns: listingColumns, spacing: 12) {
+                        ForEach(visible) { item in
+                            ZStack(alignment: .topTrailing) {
+                                NavigationLink {
+                                    ListingDetailView(item: item)
+                                } label: {
+                                    ListingCard(item: item)
+                                }
+                                .buttonStyle(.plain)
+                                if !store.canDeleteListing(item) {
+                                    Button {
+                                        store.toggleSavedListing(item)
+                                    } label: {
+                                        Image(systemName: store.isListingSaved(item) ? "heart.fill" : "heart")
+                                            .font(.subheadline.weight(.semibold))
+                                            .foregroundStyle(store.isListingSaved(item) ? .red : .primary)
+                                            .frame(width: 34, height: 34)
+                                            .background(.regularMaterial, in: Circle())
+                                    }
+                                    .accessibilityLabel(
+                                        store.isListingSaved(item)
+                                            ? "Remove listing from saved items" : "Save listing")
+                                    .padding(8)
+                                }
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 16)
                 }
             }
             .padding(.vertical, 8)
@@ -194,17 +325,22 @@ struct MarketplaceView: View {
         .sheet(isPresented: $showFilters) {
             NavigationStack {
                 Form {
-                    Section("Vehicle make") {
-                        Picker("Make", selection: $filterMake) {
-                            ForEach(["All makes", "Toyota", "Honda", "Suzuki"], id: \.self) {
-                                Text($0)
+                    if category == "Vehicles" {
+                        Section("Vehicle make") {
+                            Picker("Make", selection: $filterMake) {
+                                ForEach(availableMakes, id: \.self) {
+                                    Text($0)
+                                }
                             }
                         }
                     }
                     Section("Maximum price") {
                         Toggle("Limit price", isOn: $hasPriceLimit)
                         if hasPriceLimit {
-                            Slider(value: $maxPrice, in: 500000...30_000_000, step: 500000)
+                            Slider(
+                                value: $maxPrice,
+                                in: (category == "Vehicles" ? 500_000 : 1_000)...maximumFilterPrice,
+                                step: category == "Vehicles" ? 500_000 : 1_000)
                             Text("Up to LKR \(Int(maxPrice).formatted())").font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -212,7 +348,7 @@ struct MarketplaceView: View {
                     Section {
                         Button("Reset filters") {
                             filterMake = "All makes"
-                            maxPrice = 30_000_000
+                            maxPrice = maximumFilterPrice
                             hasPriceLimit = false
                         }
                     }
@@ -229,7 +365,7 @@ struct MarketplaceView: View {
         .sheet(isPresented: $showNewListing) {
             NavigationStack {
                 NewListingView(onSaved: { item in
-                    showOnlyMine = true
+                    listingMode = "My listings"
                     category = item.category
                     query = ""
                     filterMake = "All makes"
@@ -237,48 +373,117 @@ struct MarketplaceView: View {
                 })
             }
         }
+        .onChange(of: category) { _, _ in
+            filterMake = "All makes"
+            hasPriceLimit = false
+            maxPrice = maximumFilterPrice
+        }
+        .onAppear {
+            if !store.isFirebaseConfigured && listingMode == "My listings" {
+                listingMode = "Browse"
+            }
+        }
+    }
+}
+
+private struct MarketplaceFilterChip: View {
+    let title: String
+    let symbol: String
+    let onClear: () -> Void
+
+    var body: some View {
+        Button(action: onClear) {
+            HStack(spacing: 6) {
+                Image(systemName: symbol)
+                Text(title)
+                Image(systemName: "xmark")
+            }
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 11)
+            .frame(minHeight: 44)
+            .background(Color.marketplaceBlue, in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Clear \(title) filter")
     }
 }
 
 struct ListingCard: View {
     var item: MarketplaceItem
     var body: some View {
-        SurfaceCard(padding: 0) {
-            VStack(alignment: .leading, spacing: 0) {
-                ZStack(alignment: .topTrailing) {
-                    Rectangle().fill(Color.forName(item.tint).opacity(0.12)).frame(height: 145)
-                        .overlay {
+        VStack(alignment: .leading, spacing: 0) {
+            ZStack(alignment: .bottomLeading) {
+                Rectangle()
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color.forName(item.tint).opacity(0.2),
+                                Color.forName(item.tint).opacity(0.06),
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(height: 128)
+                    .overlay {
+                        if let data = item.imageData, let image = UIImage(data: data) {
+                            Image(uiImage: image)
+                                .resizable()
+                                .scaledToFill()
+                        } else {
                             Image(systemName: item.symbol)
-                                .font(.system(size: 67, weight: .ultraLight))
+                                .font(.system(size: 55, weight: .ultraLight))
                                 .foregroundStyle(Color.forName(item.tint))
                         }
-                    Image(systemName: "heart").font(.headline).foregroundStyle(.primary).padding(11)
-                        .background(.regularMaterial, in: Circle()).padding(12)
-                }
-                .clipShape(UnevenRoundedRectangle(topLeadingRadius: 22, topTrailingRadius: 22))
-                VStack(alignment: .leading, spacing: 7) {
-                    HStack {
-                        Text(item.title).font(.headline)
-                        Spacer()
-                        Label(item.distance, systemImage: "location.fill").font(.caption2)
-                            .foregroundStyle(.secondary)
                     }
-                    Text(item.subtitle).font(.caption).foregroundStyle(.secondary)
-                    Text(item.price).font(.title3.bold()).foregroundStyle(Color.appAccent)
-                        .padding(.top, 1)
-                }
-                .padding(15)
+                    .clipped()
+                Label(item.category, systemImage: item.category == "Vehicles" ? "car.side.fill" : "gearshape.2.fill")
+                    .font(.appBadge)
+                    .foregroundStyle(.primary)
+                    .padding(.horizontal, 7).padding(.vertical, 5)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
+                    .padding(8)
             }
-            .padding(0)
+            VStack(alignment: .leading, spacing: 7) {
+                Text(item.title)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text(item.subtitle)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                Text(item.price)
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(.primary)
+                    .minimumScaleFactor(0.72)
+                    .lineLimit(1)
+                Label(item.distance, systemImage: "location.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .padding(12)
         }
+        .background(Color.appCard, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.07), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.06), radius: 7, y: 3)
     }
+}
+
+private extension Color {
+    static let marketplaceBlue = Color(red: 26 / 255, green: 107 / 255, blue: 1)
 }
 
 struct ListingDetailView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
     var item: MarketplaceItem
-    @State private var isSaved = false
     @State private var showContact = false
     @State private var showDeleteConfirmation = false
     @State private var isDeleting = false
@@ -293,21 +498,31 @@ struct ListingDetailView: View {
                 ZStack {
                     RoundedRectangle(cornerRadius: 25).fill(Color.forName(displayedItem.tint).opacity(0.12))
                         .frame(height: 250)
-                    Image(systemName: displayedItem.symbol).font(.system(size: 100, weight: .ultraLight))
-                        .foregroundStyle(Color.forName(displayedItem.tint))
+                    if let data = displayedItem.imageData, let image = UIImage(data: data) {
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(height: 250)
+                            .clipShape(RoundedRectangle(cornerRadius: 25))
+                    } else {
+                        Image(systemName: displayedItem.symbol)
+                            .font(.system(size: 100, weight: .ultraLight))
+                            .foregroundStyle(Color.forName(displayedItem.tint))
+                    }
                     VStack {
                         HStack {
                             Spacer()
                             if !store.canDeleteListing(displayedItem) {
                                 Button {
-                                    isSaved.toggle()
+                                    store.toggleSavedListing(displayedItem)
                                 } label: {
-                                    Image(systemName: isSaved ? "heart.fill" : "heart").font(.headline)
-                                        .foregroundStyle(isSaved ? .red : .primary).padding(12)
+                                    Image(systemName: store.isListingSaved(displayedItem) ? "heart.fill" : "heart").font(.headline)
+                                        .foregroundStyle(store.isListingSaved(displayedItem) ? .red : .primary).padding(12)
                                         .background(.regularMaterial, in: Circle())
                                 }
                                 .accessibilityLabel(
-                                    isSaved ? "Remove listing from saved items" : "Save listing")
+                                    store.isListingSaved(displayedItem)
+                                        ? "Remove listing from saved items" : "Save listing")
                             }
                         }
                         Spacer()
@@ -428,6 +643,9 @@ struct NewListingView: View {
     @State private var price: String
     @State private var location: String
     @State private var contact: String
+    @State private var selectedPhoto: PhotosPickerItem?
+    @State private var photoData: Data?
+    @State private var isProcessingPhoto = false
     @State private var error: String?
     @State private var isSaving = false
 
@@ -445,6 +663,8 @@ struct NewListingView: View {
         _price = State(initialValue: existingItem.map { String($0.priceAmount) } ?? "")
         _location = State(initialValue: existingItem?.distance ?? "")
         _contact = State(initialValue: existingItem?.contact ?? "")
+        _selectedPhoto = State(initialValue: nil)
+        _photoData = State(initialValue: existingItem?.imageData)
     }
 
     private var enteredPrice: Int? {
@@ -491,6 +711,35 @@ struct NewListingView: View {
             } footer: {
                 Text("Choose one category so other drivers can find your listing.")
             }
+            Section("Listing photo") {
+                PhotosPicker(selection: $selectedPhoto, matching: .images) {
+                    Label(
+                        photoData == nil ? "Choose from Photo Library" : "Change photo",
+                        systemImage: photoData == nil ? "photo.badge.plus" : "photo"
+                    )
+                }
+                .disabled(isProcessingPhoto || isSaving)
+
+                if isProcessingPhoto {
+                    ProgressView("Preparing photo…")
+                }
+
+                if let photoData, let image = UIImage(data: photoData) {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(height: 190)
+                        .frame(maxWidth: .infinity)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                        .clipped()
+
+                    Button("Remove photo", role: .destructive) {
+                        selectedPhoto = nil
+                        self.photoData = nil
+                    }
+                    .disabled(isProcessingPhoto || isSaving)
+                }
+            }
             Section("Listing") {
                 TextField(
                     category == .vehicles ? "Make and model" : "Listing title",
@@ -520,6 +769,23 @@ struct NewListingView: View {
         }
         .navigationTitle(existingItem == nil ? "New listing" : "Edit listing")
         .navigationBarTitleDisplayMode(.inline)
+        .onChange(of: selectedPhoto) { _, item in
+            guard let item else { return }
+            Task {
+                isProcessingPhoto = true
+                defer { isProcessingPhoto = false }
+                do {
+                    guard let data = try await item.loadTransferable(type: Data.self) else {
+                        throw PhotoProcessing.Error.invalidImage
+                    }
+                    photoData = try await PhotoProcessing.prepare(data, maxPixelSize: 1_200)
+                    error = nil
+                } catch {
+                    self.error = error.localizedDescription
+                }
+                selectedPhoto = nil
+            }
+        }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 Button("Cancel") { dismiss() }
@@ -549,6 +815,7 @@ struct NewListingView: View {
         item.tint = category == .vehicles ? "blue" : "orange"
         item.distance = location.trimmingCharacters(in: .whitespacesAndNewlines)
         item.contact = contact.trimmingCharacters(in: .whitespacesAndNewlines)
+        item.imageData = photoData
         Task {
             do {
                 if existingItem == nil {
@@ -569,67 +836,123 @@ struct NewListingView: View {
 struct CommunityView: View {
     @EnvironmentObject private var store: AppStore
     @State private var showComposer = false
-    @State private var selectedFilter = "All posts"
-    @State private var selectedVehicleKey = ""
+    @AppStorage("smart-vehicle-community-filter") private var selectedFilter = "All posts"
+    @State private var vehicleQuery = ""
     @State private var showMine = false
 
-    init(showMyPosts: Bool = false) {
+    init(showMyPosts: Bool = false, initialVehicleQuery: String = "") {
         _showMine = State(initialValue: showMyPosts)
-    }
-
-    private var vehicleOptions: [CommunityVehicleOption] {
-        CommunityFeedViewModel.vehicleOptions(garage: store.vehicles, posts: store.posts)
+        _vehicleQuery = State(initialValue: initialVehicleQuery)
     }
 
     private var visiblePosts: [CommunityPost] {
         CommunityFeedViewModel.visiblePosts(
-            store.posts, category: selectedFilter, vehicleKey: selectedVehicleKey,
-            authorFilter: showMine ? .myPosts
-                : (store.isFirebaseConfigured ? .otherDrivers : .everyone),
+            store.posts, category: selectedFilter, vehicleQuery: vehicleQuery,
+            authorFilter: showMine ? .myPosts : .everyone,
             currentUserID: store.currentUserID)
     }
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 15) {
-                HStack {
-                    ScreenHeading(title: "Community", subtitle: "Drivers helping drivers")
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .center, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Community Feed")
+                            .font(.appScreenTitle)
+                            .tracking(-0.5)
+                        Text("Discussions, owner insights & helpful vehicle tips")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 8)
                     Button {
                         showComposer = true
                     } label: {
-                        Image(systemName: "square.and.pencil").font(.headline)
-                            .foregroundStyle(.white).frame(width: 42, height: 42)
-                            .background(Color.appAccent, in: Circle())
+                        Image(systemName: "square.and.pencil")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 44, height: 44)
+                            .background(Color.communityBlue, in: RoundedRectangle(cornerRadius: 14))
+                            .shadow(color: Color.communityBlue.opacity(0.25), radius: 8, y: 4)
                     }
                     .accessibilityLabel("Create community post")
-                    .padding(.trailing, 20)
                 }
-                Picker("Feed", selection: $selectedFilter) {
-                    ForEach(["All posts", "Questions", "Solutions"], id: \.self) { Text($0).tag($0) }
-                }
-                .pickerStyle(.segmented).padding(.horizontal, 20)
-                HStack {
-                    Image(systemName: "car.side.fill").foregroundStyle(Color.appAccent)
-                    Picker("Vehicle", selection: $selectedVehicleKey) {
-                        Text("All vehicles").tag("")
-                        ForEach(vehicleOptions) { vehicle in
-                            Text(vehicle.title).tag(vehicle.key)
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+
+                HStack(spacing: 10) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    TextField("Search vehicles or discussions", text: $vehicleQuery)
+                        .textInputAutocapitalization(.words)
+                        .autocorrectionDisabled()
+                        .submitLabel(.search)
+                    if !vehicleQuery.isEmpty {
+                        Button {
+                            vehicleQuery = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.secondary)
                         }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Clear vehicle search")
                     }
-                    .pickerStyle(.menu)
+                }
+                .padding(.horizontal, 14)
+                .frame(minHeight: 42)
+                .background(Color.appCard, in: RoundedRectangle(cornerRadius: 12))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12)
+                        .strokeBorder(Color.primary.opacity(0.07), lineWidth: 1)
+                }
+                .padding(.horizontal, 16)
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        CommunityFilterPill(
+                            title: "All posts", symbol: "rectangle.stack.fill",
+                            isSelected: selectedFilter == "All posts"
+                        ) { selectedFilter = "All posts" }
+                        CommunityFilterPill(
+                            title: "Questions", symbol: "questionmark.bubble.fill",
+                            isSelected: selectedFilter == "Questions"
+                        ) { selectedFilter = "Questions" }
+                        CommunityFilterPill(
+                            title: "Solutions", symbol: "checkmark.seal.fill",
+                            isSelected: selectedFilter == "Solutions"
+                        ) { selectedFilter = "Solutions" }
+                    }
+                    .padding(.horizontal, 16)
+                }
+
+                HStack(spacing: 12) {
+                    Label(
+                        vehicleQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            ? "Latest activity" : "Vehicle matches",
+                        systemImage: "car.side.fill"
+                    )
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
                     Spacer()
                     Text("\(visiblePosts.count) posts")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(Color.communityBlue)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 5)
+                        .background(Color.communityBlue.opacity(0.11), in: Capsule())
                 }
-                .padding(.horizontal, 20)
+                .padding(.horizontal, 16)
+
                 Picker("Posts", selection: $showMine) {
                     Text("Browse").tag(false)
                     Text("My posts").tag(true)
                 }
-                .pickerStyle(.segmented).padding(.horizontal, 20)
+                .pickerStyle(.segmented)
+                .padding(.horizontal, 16)
                 if !store.isFirebaseConfigured {
                     Label("Demo posts are only shown on this device.", systemImage: "info.circle")
-                        .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 20)
+                        .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 16)
                 }
                 if visiblePosts.isEmpty {
                     EmptyStateView(
@@ -639,13 +962,21 @@ struct CommunityView: View {
                             : store.posts.isEmpty
                             ? "Ask a question or share an experience with other vehicle owners."
                             : "Try another vehicle or feed filter to see more discussions.",
-                        action: "Create a post"
-                    ) { showComposer = true }
+                        action: store.posts.isEmpty ? "Create a post" : "Clear filters"
+                    ) {
+                        if store.posts.isEmpty {
+                            showComposer = true
+                        } else {
+                            selectedFilter = "All posts"
+                            vehicleQuery = ""
+                            showMine = false
+                        }
+                    }
                 } else {
                     LazyVStack(spacing: 12) {
                         ForEach(visiblePosts) { post in PostCard(post: post) }
                     }
-                    .padding(.horizontal, 20)
+                    .padding(.horizontal, 16)
                 }
             }
             .padding(.vertical, 8)
@@ -657,10 +988,43 @@ struct CommunityView: View {
                 CreatePostView(onSaved: {
                     showMine = true
                     selectedFilter = "All posts"
-                    selectedVehicleKey = ""
+                    vehicleQuery = ""
                 })
             }
         }
+    }
+}
+
+private struct CommunityFilterPill: View {
+    let title: String
+    let symbol: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Label(title, systemImage: symbol)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(isSelected ? Color.white : Color.secondary)
+                .padding(.horizontal, 14)
+                .frame(minHeight: 44)
+                .background(
+                    isSelected ? Color.communityBlue : Color.appCard,
+                    in: Capsule()
+                )
+                .overlay {
+                    Capsule().strokeBorder(
+                        isSelected ? Color.clear : Color.primary.opacity(0.08),
+                        lineWidth: 1
+                    )
+                }
+                .shadow(
+                    color: isSelected ? Color.communityBlue.opacity(0.2) : .clear,
+                    radius: 4,
+                    y: 2
+                )
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -670,38 +1034,52 @@ struct PostCard: View {
     var post: CommunityPost
     var isInDetail = false
     var body: some View {
-        VStack(alignment: .leading, spacing: 13) {
-            HStack(spacing: 10) {
-                Text(post.initials).font(.caption.bold()).foregroundStyle(Color.appAccent)
-                    .frame(width: 39, height: 39).background(Color.appMint, in: Circle())
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 11) {
+                Text(post.initials)
+                    .font(.caption.bold())
+                    .foregroundStyle(Color.communityBlue)
+                    .frame(width: 40, height: 40)
+                    .background(Color.communityBlue.opacity(0.12), in: Circle())
+                    .overlay(alignment: .bottomTrailing) {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 7, weight: .black))
+                            .foregroundStyle(.white)
+                            .frame(width: 14, height: 14)
+                            .background(Color.communityBlue, in: Circle())
+                            .overlay(Circle().stroke(Color.appCard, lineWidth: 2))
+                    }
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(post.author).font(.subheadline.bold())
-                    Text("\(post.vehicle) · \(post.time)").font(.caption2)
-                        .foregroundStyle(.secondary)
+                    Text(post.author).font(.subheadline.weight(.semibold))
+                    HStack(spacing: 5) {
+                        Text(post.vehicle).foregroundStyle(Color.communityBlue)
+                        Text("·")
+                        Text(post.displayTime)
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
                 }
                 Spacer()
                 StatusBadge(text: post.category)
             }
-            Text(post.text).font(.subheadline).lineSpacing(3).lineLimit(5)
-            if let image = post.image, !image.isEmpty {
-                RoundedRectangle(cornerRadius: 15).fill(Color.appMint).frame(height: 145)
-                    .overlay {
-                        Image(systemName: "car.side.fill").font(.system(size: 50, weight: .light))
-                            .foregroundStyle(Color.appAccent)
-                    }
+            Text(post.text)
+                .font(.subheadline)
+                .foregroundStyle(.primary.opacity(0.92))
+                .lineSpacing(4)
+                .lineLimit(6)
+            if let data = post.imageData, let image = UIImage(data: data) {
+                Image(uiImage: image).resizable().scaledToFill().frame(height: 190)
+                    .clipShape(RoundedRectangle(cornerRadius: 12)).clipped()
             }
-            HStack {
-                if !store.canDeletePost(post) && !isInDetail {
-                    Button {
-                        store.toggleLike(post)
-                    } label: {
-                        Label("\(post.likes)", systemImage: post.isLiked ? "heart.fill" : "heart")
-                            .foregroundStyle(post.isLiked ? .red : .secondary)
-                    }
-                } else {
-                    Label("\(post.likes)", systemImage: "heart")
-                        .foregroundStyle(.secondary)
+            Divider().overlay(Color.primary.opacity(0.06))
+            HStack(spacing: 18) {
+                Button {
+                    store.toggleLike(post)
+                } label: {
+                    Label("\(post.likes)", systemImage: post.isLiked ? "heart.fill" : "heart")
+                        .foregroundStyle(post.isLiked ? .red : .secondary)
                 }
+                .disabled(store.pendingLikePostIDs.contains(post.id))
                 if !isInDetail {
                     Button {
                         showDetail = true
@@ -718,16 +1096,28 @@ struct PostCard: View {
                     Button {
                         showDetail = true
                     } label: {
-                        Text("View discussion").foregroundStyle(Color.appAccent).fontWeight(.semibold)
+                        Label("Open", systemImage: "arrow.up.right")
+                            .foregroundStyle(Color.communityBlue)
+                            .fontWeight(.semibold)
                     }
                 }
             }
             .font(.caption)
         }
-        .padding(15).background(Color.appCard, in: RoundedRectangle(cornerRadius: 21))
+        .padding(16)
+        .background(Color.appCard, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.07), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.04), radius: 8, y: 3)
         .onTapGesture { if !isInDetail { showDetail = true } }
         .sheet(isPresented: $showDetail) { NavigationStack { PostDetailView(post: post) } }
     }
+}
+
+private extension Color {
+    static let communityBlue = Color(red: 37 / 255, green: 99 / 255, blue: 235 / 255)
 }
 
 struct CreatePostView: View {
@@ -739,7 +1129,7 @@ struct CreatePostView: View {
     @State private var category = "Question"
     @State private var postingVehicleID: UUID?
     @State private var selectedPhoto: PhotosPickerItem?
-    @State private var hasPhoto = false
+    @State private var photoData: Data?
     @State private var error: String?
     @State private var isSaving = false
     var body: some View {
@@ -764,10 +1154,32 @@ struct CreatePostView: View {
             Section("Photo") {
                 PhotosPicker(selection: $selectedPhoto, matching: .images) {
                     Label(
-                        hasPhoto ? "Photo attached" : "Add a photo",
-                        systemImage: hasPhoto ? "checkmark.circle.fill" : "photo")
+                        photoData == nil ? "Add a photo" : "Change photo",
+                        systemImage: photoData == nil ? "photo" : "checkmark.circle.fill")
                 }
-                .onChange(of: selectedPhoto) { _, value in Task { hasPhoto = value != nil } }
+                .onChange(of: selectedPhoto) { _, value in
+                    guard let value else { return }
+                    Task {
+                        do {
+                            guard let data = try await value.loadTransferable(type: Data.self) else {
+                                throw PhotoProcessing.Error.invalidImage
+                            }
+                            photoData = try await PhotoProcessing.prepare(data, maxPixelSize: 1_200)
+                            error = nil
+                        } catch {
+                            selectedPhoto = nil
+                            self.error = error.localizedDescription
+                        }
+                    }
+                }
+                if let photoData, let image = UIImage(data: photoData) {
+                    Image(uiImage: image).resizable().scaledToFill().frame(height: 180)
+                        .clipShape(RoundedRectangle(cornerRadius: 14)).clipped()
+                    Button("Remove photo", role: .destructive) {
+                        selectedPhoto = nil
+                        self.photoData = nil
+                    }
+                }
             }
             if let error { Text(error).foregroundStyle(.red) }
             Section {
@@ -784,8 +1196,12 @@ struct CreatePostView: View {
             if let existingPost {
                 text = existingPost.text
                 category = existingPost.category
-                postingVehicleID = store.vehicles.first { $0.title == existingPost.vehicle }?.id
-                hasPhoto = existingPost.image != nil
+                postingVehicleID = existingPost.vehicleID
+                    ?? store.vehicles.first {
+                        existingPost.vehicle == "\($0.title) \($0.year)"
+                            || existingPost.vehicle == $0.title
+                    }?.id
+                photoData = existingPost.imageData
             } else {
                 postingVehicleID = store.selectedVehicle?.id
             }
@@ -793,16 +1209,19 @@ struct CreatePostView: View {
         .toolbar { ToolbarItem(placement: .topBarLeading) { Button("Cancel") { dismiss() } } }
     }
     private func publish() {
-        let vehicleTitle = store.vehicles.first { $0.id == postingVehicleID }?.title ?? "General"
+        let selectedVehicle = store.vehicles.first { $0.id == postingVehicleID }
+        let vehicleTitle = selectedVehicle.map { "\($0.title) \($0.year)" } ?? "General"
         var post = existingPost ?? CommunityPost(
             author: store.userName,
             initials: String(store.userName.split(separator: " ").prefix(2).compactMap(\.first)),
             vehicle: vehicleTitle, time: "Just now", text: "",
             category: category, comments: 0, likes: 0)
         post.vehicle = vehicleTitle
+        post.vehicleID = selectedVehicle?.id
         post.text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         post.category = category
-        post.image = hasPhoto ? "attached" : nil
+        post.image = photoData == nil ? nil : "attached"
+        post.imageData = photoData
         isSaving = true
         Task {
             do {
@@ -826,11 +1245,7 @@ struct PostDetailView: View {
     @Environment(\.dismiss) private var dismiss
     var post: CommunityPost
     @State private var comment = ""
-    @State private var replies: [CommunityComment] = [
-        CommunityComment(
-            author: "Dasun M.", text: "Check your tyre balance first — it helped on mine."),
-        CommunityComment(author: "Nimal P.", text: "Thanks! I'll get it checked this weekend."),
-    ]
+    @State private var replies: [CommunityComment] = []
     @State private var commentsListener: ObservationToken?
     @State private var error: String?
     @State private var isSaving = false
@@ -860,6 +1275,14 @@ struct PostDetailView: View {
                                     .foregroundStyle(Color.appAccent)
                             }
                             Spacer()
+                            if store.canDeleteComment(reply) {
+                                Button(role: .destructive) {
+                                    deleteComment(reply)
+                                } label: {
+                                    Image(systemName: "trash").foregroundStyle(.red)
+                                }
+                                .accessibilityLabel("Delete comment")
+                            }
                         }
                         .padding(13)
                         .background(Color.appCard, in: RoundedRectangle(cornerRadius: 16))
@@ -924,7 +1347,10 @@ struct PostDetailView: View {
             NavigationStack { CreatePostView(existingPost: displayedPost) }
         }
         .onAppear {
-            guard store.isFirebaseConfigured else { return }
+            guard store.isFirebaseConfigured else {
+                replies = store.comments(for: post.id)
+                return
+            }
             replies = []
             commentsListener = store.observeComments(postID: post.id) { result in
                 Task { @MainActor in
@@ -942,20 +1368,31 @@ struct PostDetailView: View {
         let message = comment.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !message.isEmpty else { return }
         let reply = CommunityComment(author: store.userName, text: message)
-        if !store.isFirebaseConfigured {
-            replies.append(reply)
-            comment = ""
-            return
-        }
         isSaving = true
         Task {
             do {
                 try await store.publishComment(reply, postID: post.id)
+                if !store.isFirebaseConfigured {
+                    replies = store.comments(for: post.id)
+                }
                 comment = ""
             } catch {
                 self.error = error.localizedDescription
             }
             isSaving = false
+        }
+    }
+
+    private func deleteComment(_ reply: CommunityComment) {
+        Task {
+            do {
+                try await store.deleteComment(reply, postID: post.id)
+                if !store.isFirebaseConfigured {
+                    replies = store.comments(for: post.id)
+                }
+            } catch {
+                self.error = error.localizedDescription
+            }
         }
     }
 }
@@ -997,7 +1434,7 @@ struct PostDetailView: View {
 
 struct NearbyMapView: View {
     @StateObject private var location = LocationService()
-    @State private var category = "All"
+    @AppStorage("smart-vehicle-nearby-category") private var category = "All"
     @State private var query = ""
     @State private var selected: NearbyPlace?
     @State private var places: [NearbyPlace] = []
@@ -1033,7 +1470,6 @@ struct NearbyMapView: View {
                 }
             }
             .mapControls {
-                MapUserLocationButton()
                 MapCompass()
                 MapScaleView()
             }
@@ -1042,20 +1478,83 @@ struct NearbyMapView: View {
                 searchRevision += 1
             }
             .overlay(alignment: .top) {
-                Picker("Nearby", selection: $category) {
-                    ForEach(["All", "Fuel", "Service"], id: \.self) { Text($0) }
+                VStack(spacing: 9) {
+                    HStack(spacing: 10) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.secondary)
+                        TextField("Search fuel or vehicle service", text: $query)
+                            .textInputAutocapitalization(.words)
+                            .autocorrectionDisabled()
+                            .submitLabel(.search)
+                        if !query.isEmpty {
+                            Button {
+                                query = ""
+                            } label: {
+                                Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Clear nearby search")
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .frame(height: 44)
+                    .background(.regularMaterial, in: Capsule())
+                    .overlay(Capsule().strokeBorder(Color.white.opacity(0.08), lineWidth: 1))
+                    .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
+
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            NearbyFilterPill(
+                                title: "All", symbol: "square.grid.2x2.fill",
+                                count: places.count, isSelected: category == "All"
+                            ) { category = "All" }
+                            NearbyFilterPill(
+                                title: "Fuel", symbol: "fuelpump.fill",
+                                count: places.filter { $0.category == "Fuel" }.count,
+                                isSelected: category == "Fuel"
+                            ) { category = "Fuel" }
+                            NearbyFilterPill(
+                                title: "Service", symbol: "wrench.and.screwdriver.fill",
+                                count: places.filter { $0.category == "Service" }.count,
+                                isSelected: category == "Service"
+                            ) { category = "Service" }
+                        }
+                    }
                 }
-                .pickerStyle(.segmented).padding(11)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 17)).padding(12)
+                .padding(.horizontal, 14)
+                .padding(.top, 12)
             }
-            .frame(height: 330)
+            .overlay(alignment: .bottomTrailing) {
+                Button {
+                    centerOnUser()
+                } label: {
+                    Image(systemName: "location.fill")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 44, height: 44)
+                        .background(Color.placeBlue, in: Circle())
+                        .shadow(color: .black.opacity(0.2), radius: 8, y: 4)
+                }
+                .accessibilityLabel("Center map on my location")
+                .padding(14)
+            }
+            .frame(height: 430)
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    SectionHeading(title: "Nearby locations")
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Nearby services").font(.headline)
+                        Text("Fuel stations and vehicle care around you")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
                     Spacer()
-                    Text("\(places.count) places").font(.caption).foregroundStyle(.secondary)
+                    Text("\(places.count) places")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(Color.placeBlue)
+                        .padding(.horizontal, 9).padding(.vertical, 5)
+                        .background(Color.placeBlue.opacity(0.11), in: Capsule())
                 }
-                .padding(.horizontal, 20).padding(.top, 17)
+                .padding(.horizontal, 16).padding(.top, 17)
                 if isLoading && places.isEmpty {
                     ProgressView("Searching this area…")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1090,32 +1589,14 @@ struct NearbyMapView: View {
                                 .buttonStyle(.plain)
                             }
                         }
-                        .padding(.horizontal, 20)
+                        .padding(.horizontal, 16)
                     }
                 }
             }
         }
-        .background(Color.appCanvas).navigationTitle("Nearby")
+        .background(Color.appCanvas).navigationTitle("Nearby Services")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    location.request()
-                    if let current = location.location {
-                        hasCenteredOnUser = true
-                        position = .region(
-                            MKCoordinateRegion(
-                                center: current.coordinate,
-                                span: MKCoordinateSpan(latitudeDelta: 0.03, longitudeDelta: 0.03)))
-                    }
-                } label: {
-                    Image(systemName: "location.fill")
-                }
-                .accessibilityLabel("Center map on my location")
-            }
-        }
         .sheet(item: $selected) { place in LocationDetailSheet(place: place) }
-        .searchable(text: $query, prompt: "Fuel or vehicle service")
         .onChange(of: query) { _, _ in searchRevision += 1 }
         .onChange(of: category) { _, _ in searchRevision += 1 }
         .onReceive(location.$location) { current in
@@ -1131,6 +1612,18 @@ struct NearbyMapView: View {
         }
         .onAppear { location.request() }
         .task(id: searchRevision) { await searchPlaces() }
+    }
+
+    private func centerOnUser() {
+        location.request()
+        guard let current = location.location else { return }
+        hasCenteredOnUser = true
+        position = .region(
+            MKCoordinateRegion(
+                center: current.coordinate,
+                span: MKCoordinateSpan(latitudeDelta: 0.03, longitudeDelta: 0.03)
+            )
+        )
     }
 
     @MainActor private func searchPlaces() async {
@@ -1170,7 +1663,10 @@ struct NearbyMapView: View {
                         symbol: searchCategory == "Fuel"
                             ? "fuelpump.fill" : "wrench.and.screwdriver.fill",
                         latitude: coordinate.latitude,
-                        longitude: coordinate.longitude)
+                        longitude: coordinate.longitude,
+                        address: item.placemark.title,
+                        phoneNumber: item.phoneNumber,
+                        websiteURL: item.url?.absoluteString)
                     if !found.contains(where: { $0.id == place.id }) {
                         found.append(place)
                     }
@@ -1236,53 +1732,320 @@ struct NearbyMapView: View {
     }
 }
 
+private struct NearbyFilterPill: View {
+    let title: String
+    let symbol: String
+    let count: Int
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: symbol)
+                Text(title)
+                Text("\(count)")
+                    .font(.appBadge)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(
+                        isSelected ? Color.white.opacity(0.2) : Color.primary.opacity(0.08),
+                        in: Capsule()
+                    )
+            }
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(isSelected ? Color.white : Color.primary)
+            .padding(.horizontal, 12)
+            .frame(minHeight: 44)
+            .background(
+                isSelected ? Color.placeBlue : Color.appCard.opacity(0.9),
+                in: Capsule()
+            )
+            .overlay {
+                Capsule().strokeBorder(
+                    isSelected ? Color.clear : Color.primary.opacity(0.08), lineWidth: 1)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 struct LocationCard: View {
     var place: NearbyPlace
     var body: some View {
-        SurfaceCard(padding: 13) {
-            HStack(spacing: 12) {
-                Image(systemName: place.symbol).foregroundStyle(Color.appAccent)
-                    .frame(width: 42, height: 42)
-                    .background(Color.appMint, in: RoundedRectangle(cornerRadius: 13))
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(place.name).font(.subheadline.bold()).foregroundStyle(.primary)
-                    Text(place.category).font(.caption).foregroundStyle(.secondary)
+        HStack(spacing: 12) {
+            Image(systemName: place.symbol)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(place.category == "Fuel" ? Color.orange : Color.placeBlue)
+                .frame(width: 44, height: 44)
+                .background(
+                    (place.category == "Fuel" ? Color.orange : Color.placeBlue).opacity(0.12),
+                    in: RoundedRectangle(cornerRadius: 12)
+                )
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 5) {
+                    Text(place.name).font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Image(systemName: "checkmark.seal.fill")
+                        .font(.caption2).foregroundStyle(Color.placeBlue)
                 }
-                Spacer()
-                Text(place.distance).font(.caption.weight(.semibold))
+                Text(place.address ?? place.category)
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Text(place.category.uppercased())
+                    .font(.appBadge).tracking(0.6)
+                    .foregroundStyle(place.category == "Fuel" ? Color.orange : Color.placeBlue)
+            }
+            Spacer(minLength: 6)
+            VStack(alignment: .trailing, spacing: 6) {
+                Text(place.distance)
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 8).padding(.vertical, 5)
+                    .background(Color.appElevated, in: Capsule())
+                Image(systemName: "chevron.right")
+                    .font(.caption2.weight(.bold)).foregroundStyle(.tertiary)
             }
         }
+        .padding(13)
+        .background(Color.appCard, in: RoundedRectangle(cornerRadius: 14))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14)
+                .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.035), radius: 6, y: 2)
     }
 }
 
 struct LocationDetailSheet: View {
     @Environment(\.dismiss) private var dismiss
     var place: NearbyPlace
-    var body: some View {
-        VStack(spacing: 17) {
-            Capsule().fill(.tertiary).frame(width: 38, height: 5).padding(.top, 9)
-            Image(systemName: place.symbol).font(.system(size: 27)).foregroundStyle(Color.appAccent)
-                .frame(width: 66, height: 66)
-                .background(Color.appMint, in: RoundedRectangle(cornerRadius: 21))
-            Text(place.name).font(.title3.bold())
-            Text("\(place.category) · \(place.distance) from \(place.distanceSource)")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            Button {
-                let coordinate = CLLocationCoordinate2D(
-                    latitude: place.latitude, longitude: place.longitude)
-                let mapItem = MKMapItem(placemark: MKPlacemark(coordinate: coordinate))
-                mapItem.name = place.name
-                mapItem.openInMaps(launchOptions: [
-                    MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeDriving
-                ])
-            } label: {
-                Label("Get directions", systemImage: "arrow.triangle.turn.up.right.diamond.fill")
-            }
-            .buttonStyle(PrimaryButtonStyle())
-            Button("Done") { dismiss() }.font(.subheadline.weight(.semibold))
-                .foregroundStyle(Color.appAccent)
-        }
-        .padding(22).presentationDetents([.medium])
+
+    private var coordinate: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: place.latitude, longitude: place.longitude)
     }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                placeHero
+                metadataCard
+                quickActions
+                mapPreview
+
+                if let address = place.address, !address.isEmpty {
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text("Location").font(.headline)
+                        Label(address, systemImage: "mappin.and.ellipse")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 16)
+                }
+            }
+            .padding(.top, 8)
+            .padding(.bottom, 30)
+        }
+        .background(Color.appCanvas.ignoresSafeArea())
+        .presentationDetents([.large])
+        .presentationDragIndicator(.hidden)
+    }
+
+    private var placeHero: some View {
+        ZStack(alignment: .bottomLeading) {
+            LinearGradient(
+                colors: [
+                    Color.placeBlue.opacity(0.8),
+                    Color(red: 0.06, green: 0.11, blue: 0.2),
+                    Color.appCard,
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            Image(systemName: place.symbol)
+                .font(.system(size: 92, weight: .ultraLight))
+                .foregroundStyle(.white.opacity(0.28))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.72)],
+                startPoint: .center,
+                endPoint: .bottom
+            )
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Text(place.name)
+                        .font(.appScreenTitle)
+                        .foregroundStyle(.white)
+                        .lineLimit(2)
+                    Image(systemName: "checkmark.seal.fill")
+                        .foregroundStyle(Color.placeBlue)
+                }
+                Text(place.address ?? place.category)
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.78))
+                    .lineLimit(2)
+            }
+            .padding(16)
+
+            VStack {
+                HStack {
+                    Label(place.category, systemImage: place.symbol)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 10).padding(.vertical, 6)
+                        .background(.ultraThinMaterial, in: Capsule())
+                    Spacer()
+                    Button { dismiss() } label: {
+                        Image(systemName: "xmark")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 34, height: 34)
+                            .background(.ultraThinMaterial, in: Circle())
+                    }
+                    .accessibilityLabel("Close place details")
+                }
+                Spacer()
+            }
+            .padding(12)
+        }
+        .frame(height: 256)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .shadow(color: .black.opacity(0.18), radius: 12, y: 6)
+        .padding(.horizontal, 16)
+    }
+
+    private var metadataCard: some View {
+        VStack(spacing: 12) {
+            HStack {
+                Label("Apple Maps listing", systemImage: "map.fill")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Text(place.category)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.placeBlue)
+                    .padding(.horizontal, 9).padding(.vertical, 5)
+                    .background(Color.placeBlue.opacity(0.12), in: Capsule())
+            }
+            Divider()
+            HStack {
+                Label("Nearby", systemImage: "circle.fill")
+                    .foregroundStyle(.green)
+                Spacer()
+                Label("\(place.distance) from \(place.distanceSource)", systemImage: "location.fill")
+                    .foregroundStyle(.secondary)
+            }
+            .font(.caption.weight(.medium))
+        }
+        .padding(16)
+        .background(Color.appElevated, in: RoundedRectangle(cornerRadius: 14))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14)
+                .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private var quickActions: some View {
+        HStack(spacing: 10) {
+            Button(action: openDirections) {
+                Label("Directions", systemImage: "arrow.triangle.turn.up.right.diamond.fill")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(LocationPrimaryActionStyle())
+
+            if let phoneNumber = place.phoneNumber,
+                let url = URL(string: "tel:\(phoneNumber.filter { !$0.isWhitespace })")
+            {
+                Link(destination: url) {
+                    Label("Call", systemImage: "phone.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(LocationSecondaryActionStyle())
+            }
+
+            if let websiteURL = place.websiteURL, let url = URL(string: websiteURL) {
+                Link(destination: url) {
+                    Image(systemName: "safari.fill").frame(width: 20)
+                }
+                .buttonStyle(LocationSecondaryActionStyle())
+                .accessibilityLabel("Open website")
+            }
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private var mapPreview: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Map preview").font(.headline)
+                Spacer()
+                Button("Open Maps", action: openDirections)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.placeBlue)
+            }
+            Map(
+                initialPosition: .region(
+                    MKCoordinateRegion(
+                        center: coordinate,
+                        span: MKCoordinateSpan(latitudeDelta: 0.012, longitudeDelta: 0.012)
+                    )
+                ),
+                interactionModes: []
+            ) {
+                Marker(place.name, systemImage: place.symbol, coordinate: coordinate)
+            }
+            .frame(height: 190)
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .allowsHitTesting(false)
+        }
+        .padding(16)
+        .background(Color.appCard, in: RoundedRectangle(cornerRadius: 14))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14)
+                .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private func openDirections() {
+        let mapItem = MKMapItem(placemark: MKPlacemark(coordinate: coordinate))
+        mapItem.name = place.name
+        mapItem.openInMaps(launchOptions: [
+            MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeDriving
+        ])
+    }
+}
+
+private struct LocationPrimaryActionStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.white)
+            .frame(height: 48)
+            .background(
+                Color.placeBlue.opacity(configuration.isPressed ? 0.76 : 1),
+                in: RoundedRectangle(cornerRadius: 13)
+            )
+    }
+}
+
+private struct LocationSecondaryActionStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(Color.placeBlue)
+            .padding(.horizontal, 14)
+            .frame(height: 48)
+            .background(
+                Color.appCard.opacity(configuration.isPressed ? 0.7 : 1),
+                in: RoundedRectangle(cornerRadius: 13)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 13)
+                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+            }
+    }
+}
+
+private extension Color {
+    static let placeBlue = Color(red: 26 / 255, green: 107 / 255, blue: 1)
 }

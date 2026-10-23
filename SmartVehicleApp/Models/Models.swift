@@ -20,6 +20,8 @@ struct Vehicle: Identifiable, Codable, Hashable {
     var vin: String
     var engine: String
     var transmission: String
+    var serviceMileageInterval: Int? = nil
+    var serviceMonthInterval: Int? = nil
     var notes: String = ""
     var title: String { "\(make) \(model)" }
     var distanceToService: Int { max(0, nextServiceMileage - mileage) }
@@ -86,12 +88,49 @@ struct CommunityPost: Identifiable, Codable, Hashable {
     var image: String? = nil
     var isLiked: Bool = false
     var authorID: String? = nil
+    var vehicleID: UUID? = nil
+    var createdAt: Date? = nil
+    var imageData: Data? = nil
+
+    var displayTime: String {
+        guard let createdAt else { return time }
+        let seconds = max(0, Int(Date().timeIntervalSince(createdAt)))
+        switch seconds {
+        case 0..<60: return "Just now"
+        case 60..<3_600: return "\(seconds / 60)m ago"
+        case 3_600..<86_400: return "\(seconds / 3_600)h ago"
+        case 86_400..<172_800: return "Yesterday"
+        default: return createdAt.shortDate
+        }
+    }
 }
 
 struct CommunityComment: Identifiable, Codable, Hashable {
     var id = UUID()
     var author: String
     var text: String
+    var authorID: String? = nil
+    var createdAt: Date? = nil
+}
+
+struct CommunityNotification: Identifiable, Hashable {
+    var id: String
+    var type: String
+    var actorName: String
+    var postID: UUID
+    var postPreview: String
+    var createdAt: Date
+    var isRead: Bool
+
+    var title: String {
+        type == "comment" ? "New comment" : "New like"
+    }
+
+    var message: String {
+        type == "comment"
+            ? "\(actorName) commented on your post."
+            : "\(actorName) liked your post."
+    }
 }
 
 struct MarketplaceItem: Identifiable, Codable, Hashable {
@@ -105,6 +144,7 @@ struct MarketplaceItem: Identifiable, Codable, Hashable {
     var distance: String
     var sellerID: String? = nil
     var contact: String? = nil
+    var imageData: Data? = nil
 
     var priceAmount: Int {
         Int(price.filter(\.isNumber)) ?? 0
@@ -120,6 +160,9 @@ struct NearbyPlace: Identifiable, Hashable {
     var symbol: String
     var latitude: Double
     var longitude: Double
+    var address: String? = nil
+    var phoneNumber: String? = nil
+    var websiteURL: String? = nil
 }
 
 enum ExpenseCategory: String, CaseIterable, Identifiable {

@@ -30,18 +30,58 @@ struct ActivityHubView: View {
 struct ActivityOverviewView: View {
     @EnvironmentObject private var store: AppStore
     var onSelect: (String) -> Void
+    private var monthInterval: DateInterval? {
+        Calendar.current.dateInterval(of: .month, for: Date())
+    }
+    private var thisMonthExpenses: Double {
+        guard let monthInterval else { return 0 }
+        let other = store.selectedExpenses
+            .filter { monthInterval.contains($0.date) }
+            .reduce(0) { $0 + $1.amount }
+        let fuel = store.selectedFuelRecords
+            .filter { monthInterval.contains($0.date) }
+            .reduce(0) { $0 + $1.total }
+        let maintenance = store.selectedVehicleRecords
+            .filter { monthInterval.contains($0.date) }
+            .reduce(0) { $0 + $1.cost }
+        return other + fuel + maintenance
+    }
+    private var allTransactions: [ActivityDatedAmount] {
+        store.selectedExpenses.map { ActivityDatedAmount(date: $0.date, amount: $0.amount) }
+            + store.selectedFuelRecords.map { ActivityDatedAmount(date: $0.date, amount: $0.total) }
+            + store.selectedVehicleRecords.map { ActivityDatedAmount(date: $0.date, amount: $0.cost) }
+    }
+    private var totalSpending: Double {
+        allTransactions.reduce(0) { $0 + $1.amount }
+    }
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                HStack(spacing: 11) {
-                    MetricTile(
-                        title: "This month", value: compactMoney(store.totalExpenses),
-                        detail: "All categories", symbol: "creditcard.fill", tint: .blue)
-                    MetricTile(
-                        title: "Fuel", value: compactMoney(store.totalFuel),
-                        detail: "\(store.selectedFuelRecords.count) fill-ups",
-                        symbol: "fuelpump.fill")
+                LazyVGrid(
+                    columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible())],
+                    spacing: 10
+                ) {
+                    ActivityMetricCard(
+                        title: "THIS MONTH", value: compactMoney(thisMonthExpenses),
+                        detail: "All activity", symbol: "calendar", tint: .blue)
+                    ActivityMetricCard(
+                        title: "TOTAL SPEND", value: compactMoney(totalSpending),
+                        detail: "All recorded", symbol: "creditcard.fill", tint: .purple)
+                    ActivityMetricCard(
+                        title: "FILL-UPS", value: "\(store.selectedFuelRecords.count)",
+                        detail: compactMoney(store.totalFuel), symbol: "fuelpump.fill", tint: .appAccent)
+                    ActivityMetricCard(
+                        title: "SERVICES", value: "\(store.selectedVehicleRecords.count)",
+                        detail: "Maintenance records", symbol: "wrench.and.screwdriver.fill",
+                        tint: .orange)
                 }
+                .padding(.horizontal, 20)
+                ActivitySpendTrendChart(
+                    title: "Overall spending trend",
+                    subtitle: "Fuel, maintenance and other expenses",
+                    points: activityMonthlySpending(allTransactions),
+                    tint: .blue
+                )
                 .padding(.horizontal, 20)
                 HStack(spacing: 11) {
                     Button {
@@ -122,30 +162,159 @@ private func hubAction(_ title: String, _ symbol: String, _ tint: Color) -> some
     .background(Color.appCard, in: RoundedRectangle(cornerRadius: 18))
 }
 
+private struct ActivityDatedAmount {
+    let date: Date
+    let amount: Double
+}
+
+private struct ActivitySpendPoint: Identifiable {
+    let date: Date
+    let amount: Double
+    var id: Date { date }
+}
+
+private func activityMonthlySpending(_ transactions: [ActivityDatedAmount]) -> [ActivitySpendPoint] {
+    let calendar = Calendar.current
+    let currentMonth = calendar.dateInterval(of: .month, for: Date())?.start ?? Date()
+    return (0..<6).reversed().compactMap { offset in
+        guard let month = calendar.date(byAdding: .month, value: -offset, to: currentMonth),
+            let interval = calendar.dateInterval(of: .month, for: month)
+        else { return nil }
+        return ActivitySpendPoint(
+            date: month,
+            amount: transactions.filter { interval.contains($0.date) }
+                .reduce(0) { $0 + $1.amount }
+        )
+    }
+}
+
+private struct ActivitySpendTrendChart: View {
+    let title: String
+    let subtitle: String
+    let points: [ActivitySpendPoint]
+    let tint: Color
+
+    var body: some View {
+        SurfaceCard(padding: 16) {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(title).font(.headline)
+                        Text(subtitle).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Text(compactMoney(points.reduce(0) { $0 + $1.amount }))
+                        .font(.caption.weight(.semibold)).foregroundStyle(tint)
+                }
+                Chart(points) { point in
+                    AreaMark(
+                        x: .value("Month", point.date),
+                        y: .value("Spend", point.amount)
+                    )
+                    .foregroundStyle(
+                        LinearGradient(
+                            colors: [tint.opacity(0.28), .clear],
+                            startPoint: .top, endPoint: .bottom))
+                    LineMark(
+                        x: .value("Month", point.date),
+                        y: .value("Spend", point.amount)
+                    )
+                    .foregroundStyle(tint)
+                    .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                    PointMark(
+                        x: .value("Month", point.date),
+                        y: .value("Spend", point.amount)
+                    )
+                    .foregroundStyle(tint)
+                }
+                .chartXAxis {
+                    AxisMarks(values: .stride(by: .month)) { _ in
+                        AxisGridLine().foregroundStyle(.clear)
+                        AxisValueLabel(format: .dateTime.month(.abbreviated))
+                    }
+                }
+                .chartYAxis {
+                    AxisMarks(position: .leading) { value in
+                        AxisGridLine().foregroundStyle(Color.secondary.opacity(0.15))
+                        AxisValueLabel {
+                            if let amount = value.as(Double.self) {
+                                Text(compactMoney(amount)).font(.caption2)
+                            }
+                        }
+                    }
+                }
+                .frame(height: 170)
+            }
+        }
+    }
+}
+
 struct MaintenanceListView: View {
     @EnvironmentObject private var store: AppStore
+    var vehicleID: UUID? = nil
     @State private var showAdd = false
-    @State private var filter = "All"
+    @AppStorage("smart-vehicle-maintenance-filter") private var filter = "All"
+    private var vehicle: Vehicle? {
+        store.vehicles.first(where: { $0.id == vehicleID }) ?? store.selectedVehicle
+    }
+    private var vehicleRecords: [MaintenanceRecord] {
+        store.maintenance.filter { $0.vehicleID == vehicle?.id }
+    }
     private var records: [MaintenanceRecord] {
-        filter == "All"
-            ? store.selectedVehicleRecords
-            : store.selectedVehicleRecords.filter {
+        return filter == "All"
+            ? vehicleRecords
+            : vehicleRecords.filter {
                 $0.type.localizedCaseInsensitiveContains(filter)
             }
+    }
+    private var thisMonthCost: Double {
+        guard let interval = Calendar.current.dateInterval(of: .month, for: Date()) else { return 0 }
+        return vehicleRecords.filter { interval.contains($0.date) }.reduce(0) { $0 + $1.cost }
+    }
+    private var totalCost: Double { vehicleRecords.reduce(0) { $0 + $1.cost } }
+    private var lastService: MaintenanceRecord? {
+        vehicleRecords.filter { $0.date <= Date() }.max { $0.date < $1.date }
     }
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                ActiveVehicleSelector(fixedVehicleID: vehicleID)
+                    .padding(.horizontal, 20)
+                ActivityAddHeader(
+                    title: "Maintenance",
+                    subtitle: "Services, repairs and upcoming care.",
+                    actionTitle: "Add service",
+                    action: { showAdd = true }
+                )
+                LazyVGrid(
+                    columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible())],
+                    spacing: 10
+                ) {
+                    ActivityMetricCard(
+                        title: "THIS MONTH", value: compactMoney(thisMonthCost),
+                        detail: "Maintenance spend", symbol: "calendar", tint: .orange)
+                    ActivityMetricCard(
+                        title: "TOTAL SPEND", value: compactMoney(totalCost),
+                        detail: "All services", symbol: "creditcard.fill", tint: .purple)
+                    ActivityMetricCard(
+                        title: "SERVICE RECORDS", value: "\(vehicleRecords.count)",
+                        detail: "Completed entries", symbol: "checklist", tint: .blue)
+                    ActivityMetricCard(
+                        title: "LAST SERVICE", value: lastService?.date.shortDate ?? "—",
+                        detail: lastService?.type ?? "No service recorded",
+                        symbol: "clock.arrow.circlepath", tint: .green)
+                }
+                .padding(.horizontal, 20)
                 SurfaceCard {
                     HStack {
                         VStack(alignment: .leading, spacing: 5) {
                             Text("NEXT SERVICE").font(.caption2.weight(.bold)).tracking(1)
                                 .foregroundStyle(.secondary)
-                            Text(store.selectedVehicle?.nextServiceMileage ?? 0, format: .number)
-                                .font(.system(size: 27, weight: .bold, design: .rounded))
+                            Text(vehicle?.nextServiceMileage ?? 0, format: .number)
+                                .font(.title2.bold())
                                 + Text(" km").font(.headline).foregroundColor(.secondary)
                             Text(
-                                "\(store.selectedVehicle?.nextServiceDate.shortDate ?? "") · Oil & filter"
+                                "\(vehicle?.nextServiceDate.shortDate ?? "") · Oil & filter"
                             )
                             .font(.caption).foregroundStyle(.secondary)
                         }
@@ -156,6 +325,15 @@ struct MaintenanceListView: View {
                                 Color.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 18))
                     }
                 }
+                .padding(.horizontal, 20)
+                ActivitySpendTrendChart(
+                    title: "Maintenance spending",
+                    subtitle: "Last six months",
+                    points: activityMonthlySpending(
+                        vehicleRecords.map { ActivityDatedAmount(date: $0.date, amount: $0.cost) }
+                    ),
+                    tint: .orange
+                )
                 .padding(.horizontal, 20)
                 HStack {
                     SectionHeading(title: "Service history")
@@ -174,9 +352,13 @@ struct MaintenanceListView: View {
                 if records.isEmpty {
                     EmptyStateView(
                         symbol: "wrench.and.screwdriver", title: "No service records yet",
-                        message: "Keep a complete history of maintenance and repairs.",
-                        action: "Add maintenance"
-                    ) { showAdd = true }
+                        message: filter == "All"
+                            ? "Keep a complete history of maintenance and repairs."
+                            : "No service records match this filter.",
+                        action: filter == "All" ? "Add service" : "Clear filter"
+                    ) {
+                        if filter == "All" { showAdd = true } else { filter = "All" }
+                    }
                 } else {
                     LazyVStack(spacing: 10) {
                         ForEach(records) { record in
@@ -200,24 +382,16 @@ struct MaintenanceListView: View {
             }
             .padding(.vertical, 12)
         }
-        .overlay(alignment: .bottomTrailing) {
-            Button {
-                showAdd = true
-            } label: {
-                Image(systemName: "plus").font(.title3.bold()).foregroundStyle(.white)
-                    .frame(width: 54, height: 54).background(Color.appAccent, in: Circle())
-                    .shadow(color: .black.opacity(0.18), radius: 10, y: 5)
-            }
-            .accessibilityLabel("Add maintenance record")
-            .padding(22)
+        .sheet(isPresented: $showAdd) {
+            NavigationStack { AddMaintenanceView(vehicleID: vehicle?.id) }
         }
-        .sheet(isPresented: $showAdd) { NavigationStack { AddMaintenanceView() } }
     }
 }
 
 struct AddMaintenanceView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
+    var vehicleID: UUID? = nil
     @State private var type = "Oil & filter change"
     @State private var date = Date()
     @State private var mileage = ""
@@ -227,18 +401,67 @@ struct AddMaintenanceView: View {
     @State private var reminderDate =
         Calendar.current.date(byAdding: .month, value: 6, to: Date()) ?? Date()
     @State private var error: String?
+    @State private var didAttemptSave = false
+    @State private var isSaving = false
+    @FocusState private var focusedField: Field?
+    private enum Field { case mileage, cost }
     private let types = [
         "Oil & filter change", "Tire rotation", "Brake service", "Battery", "Inspection", "Repair",
         "Other",
     ]
+    private var selectedVehicle: Vehicle? {
+        store.vehicles.first(where: { $0.id == vehicleID }) ?? store.selectedVehicle
+    }
+    private var odometerWarning: String? {
+        guard let vehicle = selectedVehicle, let reading = Int(mileage), reading >= 0 else {
+            return nil
+        }
+        return store.odometerWarning(vehicleID: vehicle.id, reading: reading)
+    }
+    private var projectedNextServiceMileage: Int? {
+        guard let vehicle = selectedVehicle, let reading = Int(mileage), reading >= 0 else {
+            return nil
+        }
+        return reading + (vehicle.serviceMileageInterval ?? 5_000)
+    }
+    private var mileageError: String? {
+        if mileage.isEmpty { return didAttemptSave ? "Odometer reading is required." : nil }
+        return Int(mileage).map { $0 >= 0 } == true ? nil : "Enter a valid odometer reading."
+    }
+    private var costError: String? {
+        if cost.isEmpty { return didAttemptSave ? "Service cost is required." : nil }
+        return Double(cost).map { $0 >= 0 } == true ? nil : "Enter a valid service cost."
+    }
+    private func suggestedReminderDate(from serviceDate: Date) -> Date {
+        let months = selectedVehicle?.serviceMonthInterval ?? 6
+        let calculated = Calendar.current.date(
+            byAdding: .month, value: months, to: serviceDate) ?? Date()
+        return max(calculated, Date())
+    }
     var body: some View {
         Form {
-            Section("Service") {
+            Section {
                 Picker("Service type", selection: $type) { ForEach(types, id: \.self) { Text($0) } }
-                DatePicker("Service date", selection: $date, displayedComponents: .date)
+                DatePicker("Service date", selection: $date, in: ...Date(), displayedComponents: .date)
+                LabeledContent(
+                    "Vehicle", value: selectedVehicle?.title ?? "No vehicle selected")
+                LabeledContent(
+                    "Current reading",
+                    value: "\(selectedVehicle?.mileage.formatted() ?? "—") km")
                 TextField("Odometer (km)", text: $mileage).keyboardType(.numberPad)
+                    .focused($focusedField, equals: .mileage)
                 TextField("Cost (LKR)", text: $cost).keyboardType(.decimalPad)
+                    .focused($focusedField, equals: .cost)
                 TextField("Notes", text: $notes, axis: .vertical).lineLimit(3...6)
+            } header: {
+                Text("Service")
+            } footer: {
+                if let mileageError { InlineValidationMessage(message: mileageError) }
+                else if let odometerWarning {
+                    Label(odometerWarning, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                }
+                if let costError { InlineValidationMessage(message: costError) }
             }
             Section("Reminder") {
                 Toggle("Set next reminder", isOn: $setReminder)
@@ -247,22 +470,51 @@ struct AddMaintenanceView: View {
                         "Remind me on", selection: $reminderDate, in: Date()...,
                         displayedComponents: .date)
                 }
+                if let projectedNextServiceMileage {
+                    LabeledContent(
+                        "Next service mileage",
+                        value: "\(projectedNextServiceMileage.formatted()) km")
+                }
             }
             if let error { Text(error).foregroundStyle(.red) }
             Section {
-                Button("Save maintenance") { save() }.disabled(mileage.isEmpty || cost.isEmpty)
+                Button(isSaving ? "Saving…" : "Save maintenance") { save() }
+                    .disabled(isSaving || mileage.isEmpty || cost.isEmpty)
             }
         }
         .navigationTitle("Add maintenance").navigationBarTitleDisplayMode(.inline)
         .toolbar { ToolbarItem(placement: .topBarLeading) { Button("Cancel") { dismiss() } } }
+        .onAppear {
+            guard let vehicle = selectedVehicle else { return }
+            if mileage.isEmpty { mileage = String(vehicle.mileage) }
+            reminderDate = suggestedReminderDate(from: date)
+        }
+        .onChange(of: date) { _, newDate in
+            reminderDate = suggestedReminderDate(from: newDate)
+        }
     }
     private func save() {
-        guard let vehicle = store.selectedVehicle, let mileageValue = Int(mileage),
-            let costValue = Double(cost)
+        guard !isSaving else { return }
+        didAttemptSave = true
+        if mileageError != nil {
+            focusedField = .mileage
+            return
+        }
+        if costError != nil {
+            focusedField = .cost
+            return
+        }
+        guard
+            let vehicle = store.vehicles.first(where: { $0.id == vehicleID })
+                ?? store.selectedVehicle,
+            let mileageValue = Int(mileage),
+            mileageValue >= 0,
+            let costValue = Double(cost), costValue >= 0
         else {
             error = "Enter valid mileage and cost."
             return
         }
+        isSaving = true
         store.addMaintenance(
             MaintenanceRecord(
                 vehicleID: vehicle.id, type: type, date: date, mileage: mileageValue,
@@ -273,6 +525,7 @@ struct AddMaintenanceView: View {
 
 struct MaintenanceDetailView: View {
     @EnvironmentObject private var store: AppStore
+    @Environment(\.dismiss) private var dismiss
     var record: MaintenanceRecord
     var body: some View {
         List {
@@ -284,7 +537,10 @@ struct MaintenanceDetailView: View {
                 LabeledContent("Date", value: record.date.shortDate)
                 LabeledContent("Odometer", value: "\(record.mileage.formatted()) km")
                 LabeledContent("Cost", value: money(record.cost))
-                LabeledContent("Vehicle", value: store.selectedVehicle?.title ?? "Vehicle")
+                LabeledContent(
+                    "Vehicle",
+                    value: store.vehicles.first(where: { $0.id == record.vehicleID })?.title
+                        ?? "Vehicle")
             }
             Section("Notes") {
                 Text(record.notes.isEmpty ? "No notes added." : record.notes)
@@ -299,46 +555,224 @@ struct MaintenanceDetailView: View {
             }
         }
         .navigationTitle("Service details").navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button("Delete record", systemImage: "trash", role: .destructive) {
+                        store.deleteMaintenance(record)
+                        dismiss()
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+                .accessibilityLabel("Maintenance record actions")
+            }
+        }
     }
 }
 
 struct FuelListView: View {
     @EnvironmentObject private var store: AppStore
     @State private var showAdd = false
+    @AppStorage("smart-vehicle-fuel-range") private var timeRange = "6M"
+    @State private var searchText = ""
+    private let timeRanges = ["1M", "3M", "6M", "1Y", "All"]
+    private var thisMonthFuel: Double {
+        guard let interval = Calendar.current.dateInterval(of: .month, for: Date()) else {
+            return 0
+        }
+        return store.selectedFuelRecords
+            .filter { interval.contains($0.date) }
+            .reduce(0) { $0 + $1.total }
+    }
+    private var averageFillUp: Double {
+        let records = store.selectedFuelRecords
+        guard !records.isEmpty else { return 0 }
+        return records.reduce(0) { $0 + $1.total } / Double(records.count)
+    }
+    private var estimatedEconomy: Double? {
+        let records = store.selectedFuelRecords.sorted { $0.mileage < $1.mileage }
+        guard records.count > 1 else { return nil }
+        var distance = 0
+        var litres = 0.0
+        for index in 1..<records.count {
+            let travelled = records[index].mileage - records[index - 1].mileage
+            if travelled > 0 {
+                distance += travelled
+                litres += records[index].liters
+            }
+        }
+        guard distance > 0, litres > 0 else { return nil }
+        return Double(distance) / litres
+    }
+    private var chartRecords: [FuelRecord] {
+        let calendar = Calendar.current
+        let months: Int?
+        switch timeRange {
+        case "1M": months = 1
+        case "3M": months = 3
+        case "6M": months = 6
+        case "1Y": months = 12
+        default: months = nil
+        }
+        let records = store.selectedFuelRecords
+        guard let months,
+            let cutoff = calendar.date(byAdding: .month, value: -months, to: Date())
+        else { return records.sorted { $0.date < $1.date } }
+        return records.filter { $0.date >= cutoff }.sorted { $0.date < $1.date }
+    }
+    private var visibleRecords: [FuelRecord] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return store.selectedFuelRecords
+            .filter {
+                query.isEmpty
+                    || $0.station.localizedCaseInsensitiveContains(query)
+                    || $0.date.shortDate.localizedCaseInsensitiveContains(query)
+            }
+            .sorted { $0.date > $1.date }
+    }
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                HStack(spacing: 11) {
-                    MetricTile(
-                        title: "Fuel this month", value: compactMoney(store.totalFuel),
-                        detail: "Across all fill-ups", symbol: "fuelpump.fill")
-                    MetricTile(
-                        title: "Fill-ups", value: "\(store.selectedFuelRecords.count)",
-                        detail: "Recorded", symbol: "drop.fill", tint: .blue)
+            VStack(alignment: .leading, spacing: 18) {
+                ActiveVehicleSelector().padding(.horizontal, 20)
+
+                ActivityAddHeader(
+                    title: "Fuel Management",
+                    subtitle: "Track fill-ups, spending and fuel efficiency.",
+                    actionTitle: "Add fuel",
+                    action: { showAdd = true }
+                )
+
+                LazyVGrid(
+                    columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible())],
+                    spacing: 10
+                ) {
+                    ActivityMetricCard(
+                        title: "MONTHLY SPEND", value: compactMoney(thisMonthFuel),
+                        detail: "Current month", symbol: "creditcard.fill", tint: .appAccent)
+                    ActivityMetricCard(
+                        title: "AVG. FILL-UP", value: compactMoney(averageFillUp),
+                        detail: "Per record", symbol: "gauge.with.dots.needle.50percent", tint: .blue)
+                    ActivityMetricCard(
+                        title: "FUEL ENTRIES", value: "\(store.selectedFuelRecords.count)",
+                        detail: "Total recorded", symbol: "list.bullet.rectangle", tint: .orange)
+                    ActivityMetricCard(
+                        title: "EST. ECONOMY",
+                        value: estimatedEconomy.map { String(format: "%.1f km/L", $0) } ?? "—",
+                        detail: "From odometer data", symbol: "leaf.fill", tint: .green)
                 }
                 .padding(.horizontal, 20)
-                SectionHeading(title: "Fuel history").padding(.horizontal, 20)
-                if store.selectedFuelRecords.isEmpty {
+
+                SurfaceCard(padding: 16) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        HStack(alignment: .top) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Fuel expenditure").font(.headline)
+                                Text(compactMoney(chartRecords.reduce(0) { $0 + $1.total }))
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            HStack(spacing: 2) {
+                                ForEach(timeRanges, id: \.self) { range in
+                                    Button(range) { timeRange = range }
+                                        .font(.caption2.weight(timeRange == range ? .bold : .medium))
+                                        .foregroundStyle(
+                                            timeRange == range ? Color.appCanvas : .secondary)
+                                        .padding(.horizontal, 7).padding(.vertical, 5)
+                                        .background(
+                                            timeRange == range ? Color.appAccent : Color.clear,
+                                            in: RoundedRectangle(cornerRadius: 6))
+                                }
+                            }
+                        }
+                        if chartRecords.isEmpty {
+                            ContentUnavailableView(
+                                "No chart data", systemImage: "chart.xyaxis.line",
+                                description: Text("Add a fuel record for this period."))
+                                .frame(height: 150)
+                        } else {
+                            Chart(chartRecords) { record in
+                                AreaMark(
+                                    x: .value("Date", record.date),
+                                    y: .value("Spend", record.total)
+                                )
+                                .foregroundStyle(
+                                    LinearGradient(
+                                        colors: [Color.appAccent.opacity(0.3), .clear],
+                                        startPoint: .top, endPoint: .bottom))
+                                LineMark(
+                                    x: .value("Date", record.date),
+                                    y: .value("Spend", record.total)
+                                )
+                                .foregroundStyle(Color.appAccent)
+                                .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                                PointMark(
+                                    x: .value("Date", record.date),
+                                    y: .value("Spend", record.total)
+                                )
+                                .foregroundStyle(Color.appAccent)
+                                .symbolSize(24)
+                            }
+                            .chartYAxis {
+                                AxisMarks(position: .leading) { value in
+                                    AxisGridLine().foregroundStyle(Color.secondary.opacity(0.16))
+                                    AxisValueLabel {
+                                        if let amount = value.as(Double.self) {
+                                            Text(compactMoney(amount)).font(.caption2)
+                                        }
+                                    }
+                                }
+                            }
+                            .chartXAxis {
+                                AxisMarks(values: .automatic(desiredCount: 4)) { value in
+                                    AxisGridLine().foregroundStyle(.clear)
+                                    AxisValueLabel(format: .dateTime.month(.abbreviated))
+                                }
+                            }
+                            .frame(height: 180)
+                        }
+                    }
+                }
+                .padding(.horizontal, 20)
+
+                HStack(spacing: 10) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("Search station or date", text: $searchText)
+                    if !searchText.isEmpty {
+                        Button { searchText = "" } label: {
+                            Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 14).frame(height: 44)
+                .background(Color.appCard, in: RoundedRectangle(cornerRadius: 12))
+                .padding(.horizontal, 20)
+
+                HStack {
+                    Text("Recent fuel records").font(.appSectionTitle)
+                    Spacer()
+                    Text("\(visibleRecords.count) entries")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 20)
+                if visibleRecords.isEmpty {
                     EmptyStateView(
                         symbol: "fuelpump", title: "No fuel records",
-                        message: "Add your first fill-up to see your fuel usage.",
-                        action: "Add fuel"
-                    ) { showAdd = true }
+                        message: searchText.isEmpty
+                            ? "Add your first fill-up to see your fuel usage."
+                            : "No fuel records match your search.",
+                        action: searchText.isEmpty ? "Add fuel" : "Clear search"
+                    ) {
+                        if searchText.isEmpty { showAdd = true } else { searchText = "" }
+                    }
                 } else {
                     LazyVStack(spacing: 10) {
-                        ForEach(store.selectedFuelRecords) { record in
+                        ForEach(visibleRecords) { record in
                             NavigationLink {
                                 FuelDetailView(record: record)
                             } label: {
-                                SurfaceCard(padding: 14) {
-                                    RecordRow(
-                                        symbol: "fuelpump.fill", tint: .appAccent,
-                                        title: record.station.isEmpty
-                                            ? "Fuel fill-up" : record.station,
-                                        subtitle:
-                                            "\(record.date.shortDate) · \(record.liters.formatted()) L · \(record.mileage.formatted()) km",
-                                        amount: money(record.total))
-                                }
+                                FuelRecordCard(record: record)
                             }
                             .buttonStyle(.plain)
                         }
@@ -348,18 +782,80 @@ struct FuelListView: View {
             }
             .padding(.vertical, 12)
         }
-        .overlay(alignment: .bottomTrailing) {
-            Button {
-                showAdd = true
-            } label: {
-                Image(systemName: "plus").font(.title3.bold()).foregroundStyle(.white)
-                    .frame(width: 54, height: 54).background(Color.appAccent, in: Circle())
-                    .shadow(color: .black.opacity(0.18), radius: 10, y: 5)
-            }
-            .accessibilityLabel("Add fuel record")
-            .padding(22)
-        }
         .sheet(isPresented: $showAdd) { NavigationStack { AddFuelView() } }
+    }
+}
+
+private struct ActivityMetricCard: View {
+    let title: String
+    let value: String
+    let detail: String
+    let symbol: String
+    let tint: Color
+
+    var body: some View {
+        SurfaceCard(padding: 15) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text(title).font(.caption2.bold()).tracking(0.55)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Image(systemName: symbol).font(.caption.weight(.semibold))
+                        .foregroundStyle(tint).frame(width: 28, height: 28)
+                        .background(tint.opacity(0.11), in: RoundedRectangle(cornerRadius: 9))
+                }
+                Text(value).font(.title3.bold()).monospacedDigit()
+                    .lineLimit(1).minimumScaleFactor(0.72)
+                Text(detail).font(.caption2).foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+private struct FuelRecordCard: View {
+    let record: FuelRecord
+
+    var body: some View {
+        SurfaceCard(padding: 15) {
+            VStack(alignment: .leading, spacing: 13) {
+                HStack(spacing: 12) {
+                    Image(systemName: "fuelpump.fill")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(Color.appAccent).frame(width: 44, height: 44)
+                        .background(Color.appMint, in: RoundedRectangle(cornerRadius: 13))
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(record.station.isEmpty ? "Fuel fill-up" : record.station)
+                            .font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
+                        Text(record.date.shortDate).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    VStack(alignment: .trailing, spacing: 3) {
+                        Text(money(record.total)).font(.subheadline.bold()).foregroundStyle(.primary)
+                        Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+                Divider().overlay(Color.primary.opacity(0.06))
+                HStack(spacing: 8) {
+                    FuelValuePill(symbol: "drop.fill", value: "\(record.liters.formatted()) L")
+                    FuelValuePill(symbol: "banknote", value: "\(money(record.pricePerLiter))/L")
+                    FuelValuePill(symbol: "gauge.with.dots.needle.50percent", value: "\(record.mileage.formatted()) km")
+                }
+            }
+        }
+    }
+}
+
+private struct FuelValuePill: View {
+    let symbol: String
+    let value: String
+
+    var body: some View {
+        Label(value, systemImage: symbol)
+            .font(.caption2.weight(.medium)).foregroundStyle(.secondary)
+            .lineLimit(1).minimumScaleFactor(0.65)
+            .padding(.horizontal, 8).padding(.vertical, 6)
+            .background(Color.appElevated, in: Capsule())
     }
 }
 
@@ -372,37 +868,79 @@ struct AddFuelView: View {
     @State private var price = ""
     @State private var station = ""
     @State private var error: String?
+    @State private var didAttemptSave = false
+    @State private var isSaving = false
+    @FocusState private var focusedField: Field?
+    private enum Field { case mileage, liters, price }
     var total: Double { (Double(liters) ?? 0) * (Double(price) ?? 0) }
+    private var odometerWarning: String? {
+        guard let vehicle = store.selectedVehicle, let reading = Int(mileage), reading >= 0 else {
+            return nil
+        }
+        return store.odometerWarning(vehicleID: vehicle.id, reading: reading)
+    }
+    private var mileageError: String? {
+        if mileage.isEmpty { return didAttemptSave ? "Odometer reading is required." : nil }
+        return Int(mileage).map { $0 >= 0 } == true ? nil : "Enter a valid odometer reading."
+    }
+    private var litersError: String? {
+        if liters.isEmpty { return didAttemptSave ? "Fuel quantity is required." : nil }
+        return Double(liters).map { $0 > 0 } == true ? nil : "Fuel quantity must be greater than zero."
+    }
+    private var priceError: String? {
+        if price.isEmpty { return didAttemptSave ? "Price per litre is required." : nil }
+        return Double(price).map { $0 > 0 } == true ? nil : "Price must be greater than zero."
+    }
     var body: some View {
         Form {
             Section {
+                LabeledContent("Vehicle", value: store.selectedVehicle?.title ?? "No vehicle selected")
                 LabeledContent(
                     "Current reading",
                     value: "\(store.selectedVehicle?.mileage.formatted() ?? "—") km")
                 TextField("Odometer (km)", text: $mileage).keyboardType(.numberPad)
+                    .focused($focusedField, equals: .mileage)
             } header: {
                 Text("Odometer")
             } footer: {
-                Text("A higher reading updates the Dashboard. Older readings stay in fuel history.")
+                if let mileageError { InlineValidationMessage(message: mileageError) }
+                else if let odometerWarning {
+                    Label(odometerWarning, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                } else {
+                    Text("A higher reading updates the Dashboard. Older readings stay in fuel history.")
+                }
             }
-            Section("Fill-up") {
+            Section {
                 DatePicker("Date", selection: $date, displayedComponents: .date)
                 TextField("Fuel quantity (L)", text: $liters).keyboardType(.decimalPad)
+                    .focused($focusedField, equals: .liters)
                 TextField("Price per litre (LKR)", text: $price).keyboardType(.decimalPad)
+                    .focused($focusedField, equals: .price)
                 TextField("Station (optional)", text: $station)
                 LabeledContent("Total", value: money(total))
                     .fontWeight(.semibold)
+            } header: {
+                Text("Fill-up")
+            } footer: {
+                if let litersError { InlineValidationMessage(message: litersError) }
+                if let priceError { InlineValidationMessage(message: priceError) }
             }
             if let error { Text(error).foregroundStyle(.red) }
             Section {
-                Button("Save fuel record") { save() }
-                    .disabled(mileage.isEmpty || liters.isEmpty || price.isEmpty)
+                Button(isSaving ? "Saving…" : "Save fuel record") { save() }
+                    .disabled(isSaving || mileage.isEmpty || liters.isEmpty || price.isEmpty)
             }
         }
         .navigationTitle("Add fuel").navigationBarTitleDisplayMode(.inline)
         .toolbar { ToolbarItem(placement: .topBarLeading) { Button("Cancel") { dismiss() } } }
     }
     private func save() {
+        guard !isSaving else { return }
+        didAttemptSave = true
+        if mileageError != nil { focusedField = .mileage; return }
+        if litersError != nil { focusedField = .liters; return }
+        if priceError != nil { focusedField = .price; return }
         guard let vehicle = store.selectedVehicle, let mileageValue = Int(mileage),
             mileageValue >= 0,
             let litersValue = Double(liters), let priceValue = Double(price), litersValue > 0,
@@ -411,6 +949,7 @@ struct AddFuelView: View {
             error = "Enter valid odometer, quantity, and price."
             return
         }
+        isSaving = true
         store.addFuel(
             FuelRecord(
                 vehicleID: vehicle.id, date: date, mileage: mileageValue, liters: litersValue,
@@ -420,6 +959,8 @@ struct AddFuelView: View {
 }
 
 struct FuelDetailView: View {
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.dismiss) private var dismiss
     var record: FuelRecord
     var body: some View {
         List {
@@ -434,32 +975,84 @@ struct FuelDetailView: View {
             }
         }
         .navigationTitle("Fuel details").navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button("Delete record", systemImage: "trash", role: .destructive) {
+                        store.deleteFuelRecord(record)
+                        dismiss()
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+                .accessibilityLabel("Fuel record actions")
+            }
+        }
     }
 }
 
 struct ExpenseListView: View {
     @EnvironmentObject private var store: AppStore
     @State private var showAdd = false
+    private var totalExpenses: Double {
+        store.selectedExpenses.reduce(0) { $0 + $1.amount }
+    }
+    private var thisMonthExpenses: Double {
+        guard let interval = Calendar.current.dateInterval(of: .month, for: Date()) else { return 0 }
+        return store.selectedExpenses.filter { interval.contains($0.date) }
+            .reduce(0) { $0 + $1.amount }
+    }
+    private var largestExpense: ExpenseRecord? {
+        store.selectedExpenses.max { $0.amount < $1.amount }
+    }
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                HStack(spacing: 11) {
-                    MetricTile(
-                        title: "Other expenses",
-                        value: compactMoney(store.selectedExpenses.reduce(0) { $0 + $1.amount }),
-                        detail: "All categories", symbol: "creditcard.fill", tint: .blue)
-                    MetricTile(
-                        title: "Entries", value: "\(store.selectedExpenses.count)",
-                        detail: "Recorded", symbol: "list.bullet.rectangle")
+                ActiveVehicleSelector().padding(.horizontal, 20)
+                ActivityAddHeader(
+                    title: "Expenses",
+                    subtitle: "Track every vehicle-related payment.",
+                    actionTitle: "Add expense",
+                    action: { showAdd = true }
+                )
+                LazyVGrid(
+                    columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible())],
+                    spacing: 10
+                ) {
+                    ActivityMetricCard(
+                        title: "THIS MONTH", value: compactMoney(thisMonthExpenses),
+                        detail: "Other expenses", symbol: "calendar", tint: .blue)
+                    ActivityMetricCard(
+                        title: "TOTAL SPEND", value: compactMoney(totalExpenses),
+                        detail: "All recorded", symbol: "creditcard.fill", tint: .purple)
+                    ActivityMetricCard(
+                        title: "EXPENSE ENTRIES", value: "\(store.selectedExpenses.count)",
+                        detail: "Total recorded", symbol: "list.bullet.rectangle", tint: .appAccent)
+                    ActivityMetricCard(
+                        title: "LARGEST EXPENSE",
+                        value: largestExpense.map { compactMoney($0.amount) } ?? "—",
+                        detail: largestExpense?.title ?? "No expenses recorded",
+                        symbol: "arrow.up.right", tint: .orange)
                 }
+                .padding(.horizontal, 20)
+                ActivitySpendTrendChart(
+                    title: "Expense trend",
+                    subtitle: "Last six months",
+                    points: activityMonthlySpending(
+                        store.selectedExpenses.map {
+                            ActivityDatedAmount(date: $0.date, amount: $0.amount)
+                        }
+                    ),
+                    tint: .blue
+                )
                 .padding(.horizontal, 20)
                 ExpenseBreakdownChart().padding(.horizontal, 20)
                 SectionHeading(title: "Expense history").padding(.horizontal, 20)
                 if store.selectedExpenses.isEmpty {
                     EmptyStateView(
                         symbol: "creditcard", title: "No expenses yet",
-                        message: "Track insurance, parking, parts, and more.", action: "Add expense"
-                    ) { showAdd = true }
+                        message: "Track insurance, parking, parts, and more."
+                    )
                 } else {
                     LazyVStack(spacing: 10) {
                         ForEach(store.selectedExpenses) { record in
@@ -485,18 +1078,35 @@ struct ExpenseListView: View {
             }
             .padding(.vertical, 12)
         }
-        .overlay(alignment: .bottomTrailing) {
-            Button {
-                showAdd = true
-            } label: {
-                Image(systemName: "plus").font(.title3.bold()).foregroundStyle(.white)
-                    .frame(width: 54, height: 54).background(Color.appAccent, in: Circle())
-                    .shadow(color: .black.opacity(0.18), radius: 10, y: 5)
-            }
-            .accessibilityLabel("Add expense")
-            .padding(22)
-        }
         .sheet(isPresented: $showAdd) { NavigationStack { AddExpenseView() } }
+    }
+}
+
+private struct ActivityAddHeader: View {
+    let title: String
+    let subtitle: String
+    let actionTitle: String
+    let action: () -> Void
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title).font(.appScreenTitle)
+                Text(subtitle).font(.subheadline).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            Button(action: action) {
+                Label(actionTitle, systemImage: "plus")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.appCanvas)
+                    .padding(.horizontal, 13)
+                    .frame(minHeight: 44)
+                    .background(Color.appAccent, in: RoundedRectangle(cornerRadius: 11))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(actionTitle)
+        }
+        .padding(.horizontal, 20)
     }
 }
 
@@ -517,19 +1127,58 @@ struct AddExpenseView: View {
     @State private var showPhotoLibrary = false
     @State private var showCamera = false
     @State private var isSaving = false
+    @State private var didAttemptSave = false
+    @FocusState private var focusedField: Field?
+    private enum Field { case title, amount, mileage }
+    private var odometerWarning: String? {
+        guard let vehicle = store.selectedVehicle, !mileage.isEmpty,
+            let reading = Int(mileage), reading >= 0
+        else { return nil }
+        return store.odometerWarning(vehicleID: vehicle.id, reading: reading)
+    }
+    private var titleError: String? {
+        let value = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty && (didAttemptSave || !title.isEmpty)
+            ? "A description is required." : nil
+    }
+    private var amountError: String? {
+        if amount.isEmpty { return didAttemptSave ? "Amount is required." : nil }
+        return Double(amount).map { $0 > 0 } == true ? nil : "Amount must be greater than zero."
+    }
+    private var mileageError: String? {
+        guard !mileage.isEmpty else { return nil }
+        return Int(mileage).map { $0 >= 0 } == true ? nil : "Enter a valid odometer reading."
+    }
     var body: some View {
         Form {
-            Section("Expense") {
+            Section {
+                LabeledContent("Vehicle", value: store.selectedVehicle?.title ?? "No vehicle selected")
                 TextField("Description", text: $title)
+                    .focused($focusedField, equals: .title)
                 Picker("Category", selection: $category) {
                     ForEach(ExpenseCategory.allCases.filter { $0 != .fuel && $0 != .maintenance }) {
                         Text($0.rawValue).tag($0.rawValue)
                     }
                 }
                 TextField("Amount (LKR)", text: $amount).keyboardType(.decimalPad)
+                    .focused($focusedField, equals: .amount)
                 DatePicker("Date", selection: $date, displayedComponents: .date)
+                LabeledContent(
+                    "Current reading",
+                    value: "\(store.selectedVehicle?.mileage.formatted() ?? "—") km")
                 TextField("Odometer (km, optional)", text: $mileage).keyboardType(.numberPad)
+                    .focused($focusedField, equals: .mileage)
                 TextField("Notes", text: $notes, axis: .vertical)
+            } header: {
+                Text("Expense")
+            } footer: {
+                if let titleError { InlineValidationMessage(message: titleError) }
+                if let amountError { InlineValidationMessage(message: amountError) }
+                if let mileageError { InlineValidationMessage(message: mileageError) }
+                else if let odometerWarning {
+                    Label(odometerWarning, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                }
             }
             Section("Receipt") {
                 Button {
@@ -595,16 +1244,30 @@ struct AddExpenseView: View {
     }
 
     private func save() {
+        guard !isSaving else { return }
+        didAttemptSave = true
+        if titleError != nil { focusedField = .title; return }
+        if amountError != nil { focusedField = .amount; return }
+        if mileageError != nil { focusedField = .mileage; return }
         guard let vehicle = store.selectedVehicle, let amountValue = Double(amount), amountValue > 0
         else {
             error = "Enter a valid amount."
+            return
+        }
+        let expenseMileage: Int
+        if mileage.isEmpty {
+            expenseMileage = vehicle.mileage
+        } else if let value = Int(mileage), value >= 0 {
+            expenseMileage = value
+        } else {
+            error = "Enter a valid odometer reading or leave it empty."
             return
         }
         isSaving = true
         Task {
             var record = ExpenseRecord(
                 vehicleID: vehicle.id, title: title, category: category, date: date,
-                mileage: Int(mileage) ?? vehicle.mileage, amount: amountValue, notes: notes)
+                mileage: expenseMileage, amount: amountValue, notes: notes)
             do {
                 if let receiptData {
                     try await store.setExpenseReceipt(receiptData, expenseID: record.id)
@@ -622,6 +1285,7 @@ struct AddExpenseView: View {
 
 struct ExpenseDetailView: View {
     @EnvironmentObject private var store: AppStore
+    @Environment(\.dismiss) private var dismiss
     var record: ExpenseRecord
     var body: some View {
         List {
@@ -658,6 +1322,19 @@ struct ExpenseDetailView: View {
         .navigationTitle("Expense details").navigationBarTitleDisplayMode(.inline)
         .onAppear {
             if record.hasReceipt == true { store.refreshExpenseReceipt(record.id) }
+        }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button("Delete expense", systemImage: "trash", role: .destructive) {
+                        store.deleteExpense(record)
+                        dismiss()
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+                .accessibilityLabel("Expense actions")
+            }
         }
     }
 }
@@ -717,7 +1394,7 @@ private struct BillEntry: Identifiable {
 struct BillsView: View {
     @EnvironmentObject private var store: AppStore
     @State private var selectedVehicleID: UUID?
-    @State private var selectedCategory = "All"
+    @AppStorage("smart-vehicle-bills-category") private var selectedCategory = "All"
 
     private var bills: [BillEntry] {
         let entries = store.expenses.map { BillEntry(source: .expense($0)) }
@@ -794,13 +1471,21 @@ struct BillsView: View {
 struct ExpenseBreakdownChart: View {
     @EnvironmentObject private var store: AppStore
     private var values: [(String, Double)] {
+        let now = Date()
+        let cutoff = Calendar.current.date(byAdding: .day, value: -30, to: now) ?? now
         var pairs: [(String, Double)] = ExpenseCategory.allCases.map { category in
             let total: Double =
                 switch category {
-                case .fuel: store.totalFuel
-                case .maintenance: store.selectedVehicleRecords.reduce(0) { $0 + $1.cost }
+                case .fuel:
+                    store.selectedFuelRecords.filter { $0.date >= cutoff && $0.date <= now }
+                        .reduce(0) { $0 + $1.total }
+                case .maintenance:
+                    store.selectedVehicleRecords.filter { $0.date >= cutoff && $0.date <= now }
+                        .reduce(0) { $0 + $1.cost }
                 default:
-                    store.selectedExpenses.filter { $0.category == category.rawValue }
+                    store.selectedExpenses.filter {
+                        $0.category == category.rawValue && $0.date >= cutoff && $0.date <= now
+                    }
                         .reduce(0) { $0 + $1.amount }
                 }
             return (category.rawValue, total)

@@ -1,12 +1,5 @@
 import Foundation
 
-struct CommunityVehicleOption: Identifiable, Hashable {
-    let key: String
-    let title: String
-
-    var id: String { key }
-}
-
 enum CommunityAuthorFilter: String, CaseIterable {
     case everyone = "Everyone"
     case otherDrivers = "Other drivers"
@@ -15,47 +8,21 @@ enum CommunityAuthorFilter: String, CaseIterable {
 
 struct CommunityFeedViewModel {
     static func vehicleKey(for title: String) -> String {
-        var words = title.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
-        if let last = words.last, last.count == 4,
-            let year = Int(last), (1900...2100).contains(year)
-        {
-            words.removeLast()
-        }
-        return words.joined(separator: " ").lowercased()
-    }
-
-    static func vehicleOptions(
-        garage: [Vehicle], posts: [CommunityPost]
-    ) -> [CommunityVehicleOption] {
-        var titles: [String: String] = [:]
-        for post in posts {
-            var words = post.vehicle.split(separator: " ").map(String.init)
-            if let last = words.last, last.count == 4,
-                let year = Int(last), (1900...2100).contains(year)
-            {
-                words.removeLast()
-            }
-            let title = words.joined(separator: " ")
-            let key = vehicleKey(for: title)
-            if !key.isEmpty && key != "my vehicle" && key != "general" {
-                titles[key] = title
-            }
-        }
-        for vehicle in garage {
-            titles[vehicleKey(for: vehicle.title)] = vehicle.title
-        }
-        return titles.map { CommunityVehicleOption(key: $0.key, title: $0.value) }
-            .sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+        title.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            .joined(separator: " ").lowercased()
     }
 
     static func visiblePosts(
         _ posts: [CommunityPost],
         category: String,
-        vehicleKey: String,
+        vehicleQuery: String,
         authorFilter: CommunityAuthorFilter,
         currentUserID: String?
     ) -> [CommunityPost] {
-        posts.filter { post in
+        let normalizedQuery = vehicleKey(for: vehicleQuery)
+        let queryTerms = normalizedQuery.split(separator: " ")
+
+        return posts.filter { post in
             let matchesCategory: Bool
             switch category {
             case "Questions": matchesCategory = post.category == "Question" || post.category == "Problem"
@@ -70,8 +37,10 @@ struct CommunityFeedViewModel {
             case .myPosts:
                 matchesAuthor = currentUserID != nil && post.authorID == currentUserID
             }
-            return matchesCategory && matchesAuthor
-                && (vehicleKey.isEmpty || self.vehicleKey(for: post.vehicle) == vehicleKey)
+            let normalizedVehicle = vehicleKey(for: post.vehicle)
+            let matchesVehicle = queryTerms.isEmpty
+                || queryTerms.allSatisfy { normalizedVehicle.contains($0) }
+            return matchesCategory && matchesAuthor && matchesVehicle
         }
     }
 }
