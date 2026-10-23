@@ -4,6 +4,7 @@ import SwiftUI
 import UIKit
 
 struct ActivityHubView: View {
+    var isNavigationRoot = false
     @EnvironmentObject private var store: AppStore
     @State private var selection = "Overview"
     private let tabs = ["Overview", "Maintenance", "Fuel", "Expenses"]
@@ -23,7 +24,7 @@ struct ActivityHubView: View {
                 }
             }
         }
-        .background(Color.appCanvas.ignoresSafeArea()).toolbar(.hidden, for: .navigationBar)
+        .background(Color.appCanvas.ignoresSafeArea()).appNavigationBar(isRoot: isNavigationRoot)
     }
 }
 
@@ -118,7 +119,9 @@ struct ActivityOverviewView: View {
                                         symbol: "wrench.and.screwdriver.fill", tint: .orange,
                                         title: record.type,
                                         subtitle:
-                                            "\(record.date.shortDate) · \(record.mileage.formatted()) km",
+                                            record.status == "Scheduled"
+                                                ? "Scheduled \(record.date.shortDate) · \(record.mileage.formatted()) km"
+                                                : "\(record.date.shortDate) · \(record.mileage.formatted()) km",
                                         amount: money(record.cost))
                                 }
                                 .buttonStyle(.plain)
@@ -398,13 +401,14 @@ struct AddMaintenanceView: View {
     @State private var cost = ""
     @State private var notes = ""
     @State private var setReminder = true
+    @State private var nextServiceMileage = ""
     @State private var reminderDate =
         Calendar.current.date(byAdding: .month, value: 6, to: Date()) ?? Date()
     @State private var error: String?
     @State private var didAttemptSave = false
     @State private var isSaving = false
     @FocusState private var focusedField: Field?
-    private enum Field { case mileage, cost }
+    private enum Field { case mileage, nextServiceMileage, cost }
     private let types = [
         "Oil & filter change", "Tire rotation", "Brake service", "Battery", "Inspection", "Repair",
         "Other",
@@ -418,11 +422,12 @@ struct AddMaintenanceView: View {
         }
         return store.odometerWarning(vehicleID: vehicle.id, reading: reading)
     }
-    private var projectedNextServiceMileage: Int? {
-        guard let vehicle = selectedVehicle, let reading = Int(mileage), reading >= 0 else {
-            return nil
-        }
-        return reading + (vehicle.serviceMileageInterval ?? 5_000)
+    private var isFutureService: Bool {
+        !Calendar.current.isDate(date, inSameDayAs: Date())
+            && date > Calendar.current.startOfDay(for: Date())
+    }
+    private var reminderRange: ClosedRange<Date> {
+        Date()...(isFutureService ? date : .distantFuture)
     }
     private var mileageError: String? {
         if mileage.isEmpty { return didAttemptSave ? "Odometer reading is required." : nil }
@@ -432,7 +437,22 @@ struct AddMaintenanceView: View {
         if cost.isEmpty { return didAttemptSave ? "Service cost is required." : nil }
         return Double(cost).map { $0 >= 0 } == true ? nil : "Enter a valid service cost."
     }
+    private var nextServiceMileageError: String? {
+        guard !nextServiceMileage.isEmpty else { return nil }
+        guard let value = Int(nextServiceMileage), value >= 0 else {
+            return "Enter a valid next service mileage."
+        }
+        guard let currentMileage = Int(mileage), value >= currentMileage else {
+            return "Next service mileage must be at least the current reading."
+        }
+        return nil
+    }
     private func suggestedReminderDate(from serviceDate: Date) -> Date {
+        if serviceDate > Calendar.current.startOfDay(for: Date()) {
+            let dayBefore = Calendar.current.date(byAdding: .day, value: -1, to: serviceDate)
+                ?? serviceDate
+            return max(dayBefore, Date())
+        }
         let months = selectedVehicle?.serviceMonthInterval ?? 6
         let calculated = Calendar.current.date(
             byAdding: .month, value: months, to: serviceDate) ?? Date()
@@ -442,7 +462,11 @@ struct AddMaintenanceView: View {
         Form {
             Section {
                 Picker("Service type", selection: $type) { ForEach(types, id: \.self) { Text($0) } }
-                DatePicker("Service date", selection: $date, in: ...Date(), displayedComponents: .date)
+                DatePicker(
+                    isFutureService ? "Scheduled service date" : "Service date",
+                    selection: $date,
+                    displayedComponents: .date
+                )
                 LabeledContent(
                     "Vehicle", value: selectedVehicle?.title ?? "No vehicle selected")
                 LabeledContent(
@@ -450,6 +474,9 @@ struct AddMaintenanceView: View {
                     value: "\(selectedVehicle?.mileage.formatted() ?? "—") km")
                 TextField("Odometer (km)", text: $mileage).keyboardType(.numberPad)
                     .focused($focusedField, equals: .mileage)
+                TextField("Next service mileage (km)", text: $nextServiceMileage)
+                    .keyboardType(.numberPad)
+                    .focused($focusedField, equals: .nextServiceMileage)
                 TextField("Cost (LKR)", text: $cost).keyboardType(.decimalPad)
                     .focused($focusedField, equals: .cost)
                 TextField("Notes", text: $notes, axis: .vertical).lineLimit(3...6)
@@ -461,19 +488,27 @@ struct AddMaintenanceView: View {
                     Label(odometerWarning, systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
                 }
+                if let nextServiceMileageError {
+                    InlineValidationMessage(message: nextServiceMileageError)
+                } else {
+                    Text("Change this suggested value if your service provider gave you a different due mileage.")
+                }
                 if let costError { InlineValidationMessage(message: costError) }
             }
             Section("Reminder") {
-                Toggle("Set next reminder", isOn: $setReminder)
+                Toggle(
+                    isFutureService ? "Remind me before this service" : "Set next reminder",
+                    isOn: $setReminder
+                )
                 if setReminder {
                     DatePicker(
-                        "Remind me on", selection: $reminderDate, in: Date()...,
+                        isFutureService ? "Reminder date" : "Remind me on",
+                        selection: $reminderDate, in: reminderRange,
                         displayedComponents: .date)
                 }
-                if let projectedNextServiceMileage {
-                    LabeledContent(
-                        "Next service mileage",
-                        value: "\(projectedNextServiceMileage.formatted()) km")
+                if isFutureService {
+                    Text("This will be saved as a scheduled service. You can choose a reminder before the appointment.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             }
             if let error { Text(error).foregroundStyle(.red) }
@@ -487,6 +522,9 @@ struct AddMaintenanceView: View {
         .onAppear {
             guard let vehicle = selectedVehicle else { return }
             if mileage.isEmpty { mileage = String(vehicle.mileage) }
+            if nextServiceMileage.isEmpty {
+                nextServiceMileage = String(vehicle.mileage + (vehicle.serviceMileageInterval ?? 5_000))
+            }
             reminderDate = suggestedReminderDate(from: date)
         }
         .onChange(of: date) { _, newDate in
@@ -504,6 +542,10 @@ struct AddMaintenanceView: View {
             focusedField = .cost
             return
         }
+        if nextServiceMileageError != nil {
+            focusedField = .nextServiceMileage
+            return
+        }
         guard
             let vehicle = store.vehicles.first(where: { $0.id == vehicleID })
                 ?? store.selectedVehicle,
@@ -518,7 +560,10 @@ struct AddMaintenanceView: View {
         store.addMaintenance(
             MaintenanceRecord(
                 vehicleID: vehicle.id, type: type, date: date, mileage: mileageValue,
-                cost: costValue, notes: notes, nextReminder: setReminder ? reminderDate : nil))
+                cost: costValue, notes: notes,
+                status: isFutureService ? "Scheduled" : "Completed",
+                nextReminder: setReminder ? reminderDate : nil,
+                nextServiceMileage: Int(nextServiceMileage)))
         dismiss()
     }
 }
@@ -536,6 +581,9 @@ struct MaintenanceDetailView: View {
             Section("Service details") {
                 LabeledContent("Date", value: record.date.shortDate)
                 LabeledContent("Odometer", value: "\(record.mileage.formatted()) km")
+                if let nextServiceMileage = record.nextServiceMileage {
+                    LabeledContent("Next service", value: "\(nextServiceMileage.formatted()) km")
+                }
                 LabeledContent("Cost", value: money(record.cost))
                 LabeledContent(
                     "Vehicle",

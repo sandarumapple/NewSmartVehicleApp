@@ -182,7 +182,7 @@ struct DocumentsView: View {
             .frame(maxWidth: 900)
             .frame(maxWidth: .infinity)
         }
-        .background(Color.appCanvas.ignoresSafeArea()).toolbar(.hidden, for: .navigationBar)
+        .background(Color.appCanvas.ignoresSafeArea()).appNavigationBar()
         .onAppear {
             if vehicleID == nil && selectedVehicleID == nil {
                 selectedVehicleID = store.selectedVehicle?.id
@@ -396,6 +396,9 @@ struct EditDocumentView: View {
             }
         }
         .navigationTitle("Edit document").navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) { Button("Cancel") { dismiss() } }
+        }
     }
 }
 

@@ -127,7 +127,7 @@ protocol GarageRemoteRepository {
     func publishPost(_ post: CommunityPost, userID: String) async throws
     func updatePost(_ post: CommunityPost, userID: String) async throws
     func deletePost(id: UUID, userID: String) async throws
-    func setPostLiked(_ liked: Bool, postID: UUID, userID: String) async throws
+    func setPostLiked(_ liked: Bool, postID: UUID, userID: String, actorName: String) async throws
     func observeComments(
         postID: UUID, onChange: @escaping (Result<[CommunityComment], Error>) -> Void
     ) -> ObservationToken
@@ -137,11 +137,6 @@ protocol GarageRemoteRepository {
         userID: String,
         onChange: @escaping (Result<[CommunityNotification], Error>) -> Void
     ) -> ObservationToken
-    func publishCommunityNotification(
-        _ notification: CommunityNotification,
-        recipientID: String,
-        actorID: String
-    ) async throws
     func markCommunityNotificationRead(id: String, userID: String) async throws
     func saveMessagingRegistration(_ installationID: String, userID: String) async throws
     func removeMessagingRegistration(_ installationID: String, userID: String) async throws
@@ -205,6 +200,8 @@ protocol NotificationPermissionServicing {
     func check(_ completion: @escaping (NotificationPermissionState) -> Void)
     func registerForRemoteNotifications()
     func unregisterForRemoteNotifications()
+    func setBadgeCount(_ count: Int)
+    func presentCommunityAlert(_ notification: CommunityNotification, userID: String)
 }
 
 protocol PushTokenServicing {
@@ -493,8 +490,11 @@ private struct FirebaseGarageRepository: GarageRemoteRepository {
         try await FirebaseBackend.deletePost(id: id, userID: userID)
     }
 
-    func setPostLiked(_ liked: Bool, postID: UUID, userID: String) async throws {
-        try await FirebaseBackend.setPostLiked(liked, postID: postID, userID: userID)
+    func setPostLiked(
+        _ liked: Bool, postID: UUID, userID: String, actorName: String
+    ) async throws {
+        try await FirebaseBackend.setPostLiked(
+            liked, postID: postID, userID: userID, actorName: actorName)
     }
 
     func observeComments(
@@ -519,15 +519,6 @@ private struct FirebaseGarageRepository: GarageRemoteRepository {
         let listener = FirebaseBackend.observeCommunityNotifications(
             userID: userID, onChange: onChange)
         return ObservationToken { listener.remove() }
-    }
-
-    func publishCommunityNotification(
-        _ notification: CommunityNotification,
-        recipientID: String,
-        actorID: String
-    ) async throws {
-        try await FirebaseBackend.publishCommunityNotification(
-            notification, recipientID: recipientID, actorID: actorID)
     }
 
     func markCommunityNotificationRead(id: String, userID: String) async throws {
@@ -620,6 +611,26 @@ private struct LocalReminderScheduler: ReminderScheduling {
 }
 
 private struct SystemNotificationPermissionService: NotificationPermissionServicing {
+    func presentCommunityAlert(_ notification: CommunityNotification, userID: String) {
+        let content = UNMutableNotificationContent()
+        content.title = notification.title
+        content.body = notification.message
+        content.sound = .default
+        content.threadIdentifier = "community"
+        content.userInfo = [
+            "type": notification.type,
+            "postID": notification.postID.uuidString,
+            "notificationID": notification.id,
+            "recipientID": userID,
+        ]
+        UNUserNotificationCenter.current().add(UNNotificationRequest(
+            identifier: "community.\(userID).\(notification.id)", content: content, trigger: nil))
+    }
+
+    func setBadgeCount(_ count: Int) {
+        UNUserNotificationCenter.current().setBadgeCount(count) { _ in }
+    }
+
     func request(_ completion: @escaping (NotificationPermissionState) -> Void) {
         UNUserNotificationCenter.current()
             .requestAuthorization(

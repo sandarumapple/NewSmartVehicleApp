@@ -33,11 +33,11 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/communityPosts/$(request.resource.data.postID)).data.authorID == userId
         && (
           (request.resource.data.type == 'like'
-            && get(/databases/$(database)/documents/communityPosts/$(request.resource.data.postID)).data.likedBy.hasAny([request.auth.uid]))
+            && request.resource.data.sourceID == request.auth.uid
+            && getAfter(/databases/$(database)/documents/communityPosts/$(request.resource.data.postID)).data.likedBy.hasAny([request.auth.uid]))
           ||
           (request.resource.data.type == 'comment'
-            && exists(/databases/$(database)/documents/communityPosts/$(request.resource.data.postID)/comments/$(request.resource.data.sourceID))
-            && get(/databases/$(database)/documents/communityPosts/$(request.resource.data.postID)/comments/$(request.resource.data.sourceID)).data.authorID == request.auth.uid)
+            && getAfter(/databases/$(database)/documents/communityPosts/$(request.resource.data.postID)/comments/$(request.resource.data.sourceID)).data.authorID == request.auth.uid)
         );
     }
 

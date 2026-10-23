@@ -1,5 +1,24 @@
 import SwiftUI
 
+private struct AppNavigationBar: ViewModifier {
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    let isRoot: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .toolbar(isRoot && horizontalSizeClass == .compact ? .hidden : .visible,
+                     for: .navigationBar)
+            .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+extension View {
+    // Keep native Back and iPad sidebar controls available outside compact tab roots.
+    func appNavigationBar(isRoot: Bool = false) -> some View {
+        modifier(AppNavigationBar(isRoot: isRoot))
+    }
+}
+
 extension Color {
     private static func theme(_ dark: UInt32, _ light: UInt32) -> Color {
         Color(

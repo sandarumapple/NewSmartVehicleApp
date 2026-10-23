@@ -30,6 +30,10 @@ struct RootView: View {
                 AuthenticationView()
                     .id("authentication")
                     .toolbar(.hidden, for: .tabBar)
+            } else if store.isSigningOut {
+                ProgressView("Signing out…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color.appCanvas.ignoresSafeArea())
             } else if !store.onboardingCompleted {
                 OnboardingWizardView()
             } else if store.biometricEnabled && !store.biometricUnlocked {
@@ -85,7 +89,8 @@ struct RootView: View {
             selectedTab = 0
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .background && store.biometricEnabled {
+            if phase == .background && store.isAuthenticated
+                && !store.isSigningOut && store.biometricEnabled {
                 store.lockBiometricSession()
             } else if phase == .active {
                 store.refreshNotificationPermission()
@@ -131,9 +136,9 @@ struct RootView: View {
         TabView(selection: $selectedTab) {
             NavigationStack { HomeView(selectedTab: $selectedTab) }
                 .tabItem { Label("Home", systemImage: "house.fill") }.tag(0)
-            NavigationStack { VehicleListView() }
+            NavigationStack { VehicleListView(isNavigationRoot: true) }
                 .tabItem { Label("Garage", systemImage: "car.side.fill") }.tag(1)
-            NavigationStack { ActivityHubView() }
+            NavigationStack { ActivityHubView(isNavigationRoot: true) }
                 .tabItem { Label("Activity", systemImage: "wrench.and.screwdriver.fill") }.tag(2)
             NavigationStack { ExploreView() }
                 .tabItem { Label("Explore", systemImage: "safari.fill") }.tag(3)
@@ -170,8 +175,8 @@ struct RootView: View {
 
     @ViewBuilder private var selectedSection: some View {
         switch selectedTab {
-        case 1: VehicleListView()
-        case 2: ActivityHubView()
+        case 1: VehicleListView(isNavigationRoot: true)
+        case 2: ActivityHubView(isNavigationRoot: true)
         case 3: ExploreView()
         case 4: MoreView()
         default: HomeView(selectedTab: $selectedTab)
@@ -357,26 +362,137 @@ struct LockScreen: View {
     @State private var message: String?
     @State private var isAuthenticating = false
     @State private var didAttemptAutomatically = false
+
     var body: some View {
-        VStack(spacing: 20) {
-            Image(systemName: "car.side.fill").font(.system(size: 32)).foregroundStyle(.white)
-                .frame(width: 76, height: 76)
-                .background(Color.appAccent, in: RoundedRectangle(cornerRadius: 24))
-            Text("Your garage is locked").font(.title2.bold())
-            Text("Authenticate to continue").foregroundStyle(.secondary)
-            Button {
-                attemptUnlock()
-            } label: {
-                Label(store.biometricUnlockTitle, systemImage: "lock.shield")
-                    .frame(maxWidth: 240)
+        GeometryReader { geometry in
+            ZStack {
+                lockBackground
+
+                VStack(spacing: 0) {
+                    Spacer(minLength: 44)
+
+                    VStack(spacing: 18) {
+                        ZStack {
+                            Circle()
+                                .fill(Color.appAccent.opacity(0.15))
+                                .frame(width: 128, height: 128)
+                            Circle()
+                                .strokeBorder(Color.appAccent.opacity(0.23), lineWidth: 1)
+                                .frame(width: 104, height: 104)
+                            Image(systemName: "lock.fill")
+                                .font(.system(size: 31, weight: .semibold))
+                                .foregroundStyle(Color.appCanvas)
+                                .frame(width: 66, height: 66)
+                                .background(
+                                    LinearGradient(
+                                        colors: [Color.appAccent, Color.appAccent.opacity(0.72)],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    ),
+                                    in: RoundedRectangle(cornerRadius: 22, style: .continuous)
+                                )
+                                .shadow(color: Color.appAccent.opacity(0.3), radius: 18, y: 9)
+                        }
+
+                        VStack(spacing: 8) {
+                            Text("Your garage is protected")
+                                .font(.title2.bold())
+                                .multilineTextAlignment(.center)
+                            Text("Unlock to view your vehicles, records and reminders.")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                        }
+
+                        HStack(spacing: 8) {
+                            Image(systemName: "checkmark.shield.fill")
+                            Text("Private on this device")
+                        }
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Color.appSuccess)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Color.appSuccess.opacity(0.1), in: Capsule())
+                    }
+
+                    Spacer(minLength: 34)
+
+                    VStack(spacing: 14) {
+                        Button {
+                            attemptUnlock()
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: "faceid")
+                                    .font(.system(size: 20, weight: .semibold))
+                                Text(store.biometricUnlockTitle)
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(PrimaryButtonStyle())
+                        .disabled(isAuthenticating)
+
+                        if isAuthenticating {
+                            HStack(spacing: 8) {
+                                ProgressView().controlSize(.small)
+                                Text("Waiting for authentication…")
+                            }
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        } else {
+                            Text("Face ID or your device passcode keeps your garage secure.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                        }
+
+                        if let message {
+                            Label(message, systemImage: "exclamationmark.circle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                                .multilineTextAlignment(.center)
+                        }
+                    }
+                    .padding(20)
+                    .frame(maxWidth: min(geometry.size.width - 40, 430))
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 26, style: .continuous)
+                            .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
+                    }
+
+                    Spacer(minLength: 34)
+                    Label("SMART VEHICLE", systemImage: "car.side.fill")
+                        .font(.caption2.weight(.bold))
+                        .tracking(1.4)
+                        .foregroundStyle(.secondary)
+                        .padding(.bottom, 18)
+                }
+                .padding(.horizontal, 20)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .buttonStyle(PrimaryButtonStyle())
-            .disabled(isAuthenticating)
-            if let message { Text(message).font(.caption).foregroundStyle(.red) }
         }
-        .padding(32)
+        .ignoresSafeArea()
         .onAppear { attemptAutomaticallyIfActive() }
         .onChange(of: scenePhase) { _, _ in attemptAutomaticallyIfActive() }
+    }
+
+    private var lockBackground: some View {
+        ZStack {
+            Color.appCanvas
+            RadialGradient(
+                colors: [Color.appAccent.opacity(0.22), .clear],
+                center: .topTrailing,
+                startRadius: 10,
+                endRadius: 410
+            )
+            RadialGradient(
+                colors: [Color.appSuccess.opacity(0.11), .clear],
+                center: .bottomLeading,
+                startRadius: 10,
+                endRadius: 370
+            )
+        }
+        .ignoresSafeArea()
     }
 
     private func attemptAutomaticallyIfActive() {

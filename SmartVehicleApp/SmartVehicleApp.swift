@@ -80,6 +80,13 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
             notification.request.trigger is UNPushNotificationTrigger
         {
             Messaging.messaging().appDidReceiveMessage(notification.request.content.userInfo)
+            let type = notification.request.content.userInfo["type"] as? String
+            if type == "like" || type == "comment" {
+                // The active Firestore inbox listener presents this event locally.
+                // Suppress a duplicate foreground banner if FCM also delivers it.
+                completionHandler([])
+                return
+            }
         }
         completionHandler([.banner, .sound, .badge])
     }

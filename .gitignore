@@ -10,6 +10,7 @@ build/
 # Firebase local files
 .firebase/
 firebase-debug.log
+firestore-debug.log
 SmartVehicleApp/GoogleService-Info.plist
 
 # Firebase Functions dependencies

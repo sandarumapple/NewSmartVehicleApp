@@ -42,7 +42,7 @@ struct ExploreView: View {
             .frame(maxWidth: 900)
             .frame(maxWidth: .infinity)
         }
-        .background(Color.appCanvas.ignoresSafeArea()).toolbar(.hidden, for: .navigationBar)
+        .background(Color.appCanvas.ignoresSafeArea()).appNavigationBar(isRoot: true)
     }
     private func exploreCard(
         title: String, subtitle: String, symbol: String, tint: Color, background: String
@@ -982,7 +982,7 @@ struct CommunityView: View {
             .padding(.vertical, 8)
         }
         .background(Color.appCanvas.ignoresSafeArea()).navigationTitle("Community")
-        .navigationBarTitleDisplayMode(.inline).toolbar(.hidden, for: .navigationBar)
+        .appNavigationBar()
         .sheet(isPresented: $showComposer) {
             NavigationStack {
                 CreatePostView(onSaved: {
@@ -1112,7 +1112,16 @@ struct PostCard: View {
         }
         .shadow(color: .black.opacity(0.04), radius: 8, y: 3)
         .onTapGesture { if !isInDetail { showDetail = true } }
-        .sheet(isPresented: $showDetail) { NavigationStack { PostDetailView(post: post) } }
+        .sheet(isPresented: $showDetail) {
+            NavigationStack {
+                PostDetailView(post: post)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button("Done") { showDetail = false }
+                        }
+                    }
+            }
+        }
     }
 }
 

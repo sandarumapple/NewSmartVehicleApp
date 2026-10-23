@@ -34,6 +34,36 @@ struct NotificationCenterView: View {
     }
     var body: some View {
         List {
+            if !store.publishConfirmations.isEmpty {
+                Section("Published successfully") {
+                    ForEach(store.publishConfirmations) { confirmation in
+                        NavigationLink {
+                            PublishConfirmationDestinationView(confirmation: confirmation)
+                        } label: {
+                            HStack(alignment: .top, spacing: 12) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundStyle(Color.appSuccess)
+                                    .font(.title2)
+                                    .frame(width: 38, height: 38)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack {
+                                        Text(confirmation.title).font(.subheadline.bold())
+                                        if !confirmation.isRead {
+                                            Circle().fill(Color.appAccent).frame(width: 7, height: 7)
+                                        }
+                                    }
+                                    Text(confirmation.message)
+                                        .font(.caption).foregroundStyle(.secondary)
+                                    Text(confirmation.preview).font(.caption).lineLimit(2)
+                                    Text(confirmation.createdAt.formatted(.relative(presentation: .named)))
+                                        .font(.caption2).foregroundStyle(.tertiary)
+                                }
+                            }
+                            .padding(.vertical, 4)
+                        }
+                    }
+                }
+            }
             if let error = store.communityNotificationError {
                 Section {
                     Label(error, systemImage: "exclamationmark.triangle.fill")
@@ -91,6 +121,7 @@ struct NotificationCenterView: View {
             }
             if alerts.isEmpty && deliveredNotifications.isEmpty
                 && store.communityNotifications.isEmpty
+                && store.publishConfirmations.isEmpty
             {
                 EmptyStateView(
                     symbol: "bell.slash", title: "You're all caught up",
@@ -129,7 +160,10 @@ struct NotificationCenterView: View {
         }
         .navigationTitle("Notifications").navigationBarTitleDisplayMode(.inline)
         .onAppear { refreshDeliveredNotifications() }
-        .refreshable { refreshDeliveredNotifications() }
+        .refreshable {
+            store.refreshCommunityNotifications()
+            refreshDeliveredNotifications()
+        }
     }
 
     private func refreshDeliveredNotifications() {
@@ -142,6 +176,28 @@ struct NotificationCenterView: View {
                 .sorted { $0.date > $1.date }
             }
         }
+    }
+}
+
+private struct PublishConfirmationDestinationView: View {
+    @EnvironmentObject private var store: AppStore
+    let confirmation: PublishConfirmation
+
+    var body: some View {
+        Group {
+            if confirmation.kind == .post,
+                let post = store.posts.first(where: { $0.id == confirmation.itemID }) {
+                PostDetailView(post: post)
+            } else if confirmation.kind == .listing,
+                let item = store.marketplaceItems.first(where: { $0.id == confirmation.itemID }) {
+                ListingDetailView(item: item)
+            } else {
+                EmptyStateView(
+                    symbol: "checkmark.circle", title: confirmation.title,
+                    message: "\(confirmation.message) The item is not currently available to view.")
+            }
+        }
+        .onAppear { store.markPublishConfirmationRead(confirmation) }
     }
 }
 
@@ -211,19 +267,6 @@ struct NotificationSettingsView: View {
         }
     }
 
-    private var remotePushMessage: String {
-        if !store.isFirebaseConfigured {
-            return "Remote push requires Firebase. Local reminders still work."
-        }
-        if !store.notificationsEnabled { return "Remote push is off in app settings." }
-        if !store.notificationPermissionState.allowsAlerts {
-            return "Allow notifications in iOS Settings to receive remote push."
-        }
-        return store.isPushRegistered
-            ? "This device is registered for Firebase push messages."
-            : "This device is waiting for APNs and Firebase registration."
-    }
-
     private var notificationsBinding: Binding<Bool> {
         Binding(
             get: {
@@ -254,7 +297,7 @@ struct NotificationSettingsView: View {
             Section {
                 Toggle("Allow notifications", isOn: notificationsBinding)
                     .accessibilityHint(
-                        "Controls local reminders and Firebase push notifications for this account"
+                        "Controls maintenance, document, and vehicle reminders for this account"
                     )
                 Label(
                     notificationsBinding.wrappedValue ? "Notifications are active" : "Notifications are off",
@@ -266,7 +309,7 @@ struct NotificationSettingsView: View {
                     notificationsBinding.wrappedValue ? Color.appSuccess : .secondary)
             } footer: {
                 Text(
-                    "This controls local reminders and remote push registration for this account."
+                    "This controls maintenance, document, and vehicle reminders on this device."
                 )
             }
             Section("Alert types") {
@@ -285,20 +328,6 @@ struct NotificationSettingsView: View {
                     }
                 } else if store.notificationPermissionState == .notDetermined {
                     Button("Request permission") { requestPermission() }
-                }
-            }
-            Section("Remote push") {
-                Text(remotePushMessage)
-                .font(.caption).foregroundStyle(.secondary)
-                if let installationID = store.pushInstallationID {
-                    Button {
-                        UIPasteboard.general.string = installationID
-                    } label: {
-                        Label("Copy Firebase installation ID", systemImage: "doc.on.doc")
-                    }
-                }
-                if let error = store.pushRegistrationError {
-                    Text(error).font(.caption).foregroundStyle(.red)
                 }
             }
         }

@@ -216,12 +216,23 @@ enum FirebaseBackend {
             ])
     }
 
-    static func setPostLiked(_ liked: Bool, postID: UUID, userID: String) async throws {
+    static func setPostLiked(
+        _ liked: Bool, postID: UUID, userID: String, actorName: String
+    ) async throws {
+        let post = Firestore.firestore().collection("communityPosts").document(postID.uuidString)
+        let snapshot = try await post.getDocument()
+        guard let postData = snapshot.data() else { throw BackendError.postUnavailable }
         let change: FieldValue =
             liked
             ? .arrayUnion([userID]) : .arrayRemove([userID])
-        try await Firestore.firestore().collection("communityPosts")
-            .document(postID.uuidString).updateData(["likedBy": change])
+        let batch = Firestore.firestore().batch()
+        batch.updateData(["likedBy": change], forDocument: post)
+        if liked {
+            addCommunityNotification(
+                to: batch, type: "like", postID: postID, postData: postData,
+                actorID: userID, actorName: actorName, sourceID: userID)
+        }
+        try await batch.commit()
     }
 
     static func observeComments(
@@ -257,16 +268,45 @@ enum FirebaseBackend {
         _ comment: CommunityComment, postID: UUID, userID: String
     ) async throws {
         let data = try JSONEncoder().encode(comment)
-        try await Firestore.firestore().collection("communityPosts")
-            .document(postID.uuidString).collection("comments")
-            .document(comment.id.uuidString)
-            .setData([
-                "payload": data,
-                "authorID": userID,
-                "authorName": comment.author,
-                "text": comment.text,
-                "createdAt": FieldValue.serverTimestamp(),
-            ])
+        let post = Firestore.firestore().collection("communityPosts").document(postID.uuidString)
+        let snapshot = try await post.getDocument()
+        guard let postData = snapshot.data() else { throw BackendError.postUnavailable }
+        let batch = Firestore.firestore().batch()
+        batch.setData([
+            "payload": data,
+            "authorID": userID,
+            "authorName": comment.author,
+            "text": comment.text,
+            "createdAt": FieldValue.serverTimestamp(),
+        ], forDocument: post.collection("comments").document(comment.id.uuidString))
+        addCommunityNotification(
+            to: batch, type: "comment", postID: postID, postData: postData,
+            actorID: userID, actorName: comment.author, sourceID: comment.id.uuidString)
+        try await batch.commit()
+    }
+
+    private static func addCommunityNotification(
+        to batch: WriteBatch, type: String, postID: UUID, postData: [String: Any],
+        actorID: String, actorName: String, sourceID: String
+    ) {
+        guard let recipientID = postData["authorID"] as? String,
+            !recipientID.isEmpty, recipientID != actorID else { return }
+        // Each new reaction gets its own event. Reusing a like ID would attempt an
+        // update to another user's inbox, which the security rules rightly deny.
+        let notification = Firestore.firestore().collection("users").document(recipientID)
+            .collection("notifications").document()
+        let name = actorName.trimmingCharacters(in: .whitespacesAndNewlines)
+        batch.setData([
+            "type": type,
+            "actorID": actorID,
+            "actorName": String((name.isEmpty ? "A driver" : name).prefix(80)),
+            "recipientID": recipientID,
+            "postID": postID.uuidString,
+            "sourceID": sourceID,
+            "postPreview": String((postData["text"] as? String ?? "").prefix(160)),
+            "isRead": false,
+            "createdAt": FieldValue.serverTimestamp(),
+        ], forDocument: notification)
     }
 
     static func deleteComment(id: UUID, postID: UUID, userID: String) async throws {
@@ -307,26 +347,6 @@ enum FirebaseBackend {
                     } ?? []
                 onChange(.success(notifications))
             }
-    }
-
-    static func publishCommunityNotification(
-        _ notification: CommunityNotification,
-        recipientID: String,
-        actorID: String
-    ) async throws {
-        try await Firestore.firestore().collection("users").document(recipientID)
-            .collection("notifications").document(notification.id)
-            .setData([
-                "type": notification.type,
-                "actorID": actorID,
-                "actorName": notification.actorName,
-                "recipientID": recipientID,
-                "postID": notification.postID.uuidString,
-                "sourceID": notification.id.split(separator: ".").last.map(String.init) ?? "",
-                "postPreview": String(notification.postPreview.prefix(160)),
-                "isRead": false,
-                "createdAt": FieldValue.serverTimestamp(),
-            ])
     }
 
     static func markCommunityNotificationRead(id: String, userID: String) async throws {

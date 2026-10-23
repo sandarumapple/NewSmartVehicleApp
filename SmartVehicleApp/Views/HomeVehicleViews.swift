@@ -79,9 +79,16 @@ struct HomeView: View {
                             .frame(width: 44, height: 44)
                             .background(Color.appElevated, in: Circle())
                             .overlay(alignment: .topTrailing) {
-                                if serviceNeedsAttention || !attentionDocuments.isEmpty
-                                    || store.unreadCommunityNotificationCount > 0
-                                {
+                                if store.unreadNotificationCount > 0 {
+                                    Text(store.unreadNotificationCount > 99
+                                         ? "99+" : "\(store.unreadNotificationCount)")
+                                        .font(.caption2.bold())
+                                        .foregroundStyle(.white)
+                                        .padding(.horizontal, 5)
+                                        .frame(minWidth: 18, minHeight: 18)
+                                        .background(.red, in: Capsule())
+                                        .offset(x: 3, y: -3)
+                                } else if serviceNeedsAttention || !attentionDocuments.isEmpty {
                                     Circle().fill(Color.red).frame(width: 8, height: 8)
                                         .padding(8)
                                 }
@@ -89,6 +96,7 @@ struct HomeView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Notifications")
+                    .accessibilityValue("\(store.unreadNotificationCount) unread notifications")
                     Button {
                         selectedTab = 4
                     } label: {
@@ -225,19 +233,19 @@ struct HomeView: View {
                                     )
                                 }
                             }
-                            if store.unreadCommunityNotificationCount > 0 {
+                            if store.unreadNotificationCount > 0 {
                                 Button {
                                     showNotifications = true
                                 } label: {
                                     attentionRow(
-                                        "Community updates",
-                                        "\(store.unreadCommunityNotificationCount) unread \(store.unreadCommunityNotificationCount == 1 ? "notification" : "notifications")",
+                                        "Your updates",
+                                        "\(store.unreadNotificationCount) unread \(store.unreadNotificationCount == 1 ? "notification" : "notifications")",
                                         tint: .purple
                                     )
                                 }
                             }
                             if !serviceNeedsAttention && attentionDocuments.isEmpty
-                                && store.unreadCommunityNotificationCount == 0
+                                && store.unreadNotificationCount == 0
                             {
                                 Label("All up to date", systemImage: "checkmark.seal.fill")
                                     .font(.subheadline.weight(.medium))
@@ -312,7 +320,7 @@ struct HomeView: View {
             .frame(maxWidth: .infinity)
         }
         .background(Color.appCanvas.ignoresSafeArea())
-        .toolbar(.hidden, for: .navigationBar)
+        .appNavigationBar(isRoot: true)
         .navigationDestination(isPresented: $showVehicleDetails) {
             if let vehicle { VehicleDetailView(vehicle: vehicle) }
         }
@@ -320,7 +328,16 @@ struct HomeView: View {
             VehicleSwitcherSheet().presentationDetents([.medium])
                 .presentationDragIndicator(.visible)
         }
-        .sheet(isPresented: $showNotifications) { NavigationStack { NotificationCenterView() } }
+        .sheet(isPresented: $showNotifications) {
+            NavigationStack {
+                NotificationCenterView()
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("Done") { showNotifications = false }
+                        }
+                    }
+            }
+        }
         .sheet(isPresented: $showFuel) { NavigationStack { AddFuelView() } }
         .sheet(isPresented: $showMaintenance) { NavigationStack { AddMaintenanceView() } }
         .sheet(isPresented: $showExpense) { NavigationStack { AddExpenseView() } }
@@ -745,6 +762,7 @@ private func garageServiceDue(_ vehicle: Vehicle) -> Bool {
 }
 
 struct VehicleListView: View {
+    var isNavigationRoot = false
     @EnvironmentObject private var store: AppStore
     @State private var showAdd = false
     @State private var query = ""
@@ -871,7 +889,7 @@ struct VehicleListView: View {
             .frame(maxWidth: 920)
             .frame(maxWidth: .infinity)
         }
-        .background(Color.appCanvas.ignoresSafeArea()).toolbar(.hidden, for: .navigationBar)
+        .background(Color.appCanvas.ignoresSafeArea()).appNavigationBar(isRoot: isNavigationRoot)
         .sheet(isPresented: $showAdd) { NavigationStack { AddVehicleView() } }
     }
 
@@ -1807,6 +1825,9 @@ struct EditVehicleView: View {
             }
         }
         .navigationTitle("Edit vehicle").navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) { Button("Cancel") { dismiss() } }
+        }
     }
 
     private func save() {

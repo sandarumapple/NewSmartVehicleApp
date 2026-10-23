@@ -675,13 +675,6 @@ struct SecuritySettingsView: View {
             } footer: {
                 Text("When enabled, authenticate to reopen the app after leaving it.")
             }
-            #if targetEnvironment(simulator)
-                Section {
-                    Text("Simulator: use Features → Face ID or Touch ID → Enrolled, then choose Matching Face or Matching Touch when prompted.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            #endif
             if let error { Section { Text(error).foregroundStyle(.red) } }
             Section("Privacy") {
                 Label("Biometric data stays on your device", systemImage: "lock.shield")
@@ -836,7 +829,7 @@ struct AnalyticsView: View {
             .frame(maxWidth: 1000)
             .frame(maxWidth: .infinity)
         }
-        .background(Color.appCanvas.ignoresSafeArea()).toolbar(.hidden, for: .navigationBar)
+        .background(Color.appCanvas.ignoresSafeArea()).appNavigationBar()
         .onAppear {
             now = Date()
             range = AnalyticsRange(rawValue: savedRange) ?? .sixMonths

@@ -28,6 +28,13 @@ exports.sendCommunityNotification = onDocumentCreated(
       .filter((device) => typeof device.token === "string" && device.token.length > 0);
     if (registrations.length === 0) return;
 
+    const unread = await getFirestore()
+      .collection("users")
+      .doc(userId)
+      .collection("notifications")
+      .where("isRead", "==", false)
+      .count()
+      .get();
     const isComment = notification.type === "comment";
     const response = await getMessaging().sendEachForMulticast({
       tokens: registrations.map((device) => device.token),
@@ -41,9 +48,11 @@ exports.sendCommunityNotification = onDocumentCreated(
         type: notification.type,
         postID: notification.postID,
         notificationID: event.params.notificationId,
+        recipientID: userId,
       },
       apns: {
-        payload: {aps: {sound: "default"}},
+        headers: {"apns-collapse-id": event.params.notificationId},
+        payload: {aps: {sound: "default", badge: unread.data().count}},
       },
     });
 

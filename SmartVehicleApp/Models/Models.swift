@@ -37,6 +37,7 @@ struct MaintenanceRecord: Identifiable, Codable, Hashable {
     var notes: String
     var status: String = "Completed"
     var nextReminder: Date? = nil
+    var nextServiceMileage: Int? = nil
 }
 
 struct FuelRecord: Identifiable, Codable, Hashable {
@@ -111,6 +112,23 @@ struct CommunityComment: Identifiable, Codable, Hashable {
     var text: String
     var authorID: String? = nil
     var createdAt: Date? = nil
+}
+
+struct PublishConfirmation: Identifiable, Codable {
+    enum Kind: String, Codable { case post, listing }
+    var id: String
+    var kind: Kind
+    var itemID: UUID
+    var preview: String
+    var createdAt: Date
+    var isRead = false
+
+    var title: String { kind == .post ? "Post published" : "Listing published" }
+    var message: String {
+        kind == .post
+            ? "Your community post was published successfully."
+            : "Your marketplace listing is now live."
+    }
 }
 
 struct CommunityNotification: Identifiable, Hashable {

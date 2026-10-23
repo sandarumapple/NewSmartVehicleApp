@@ -29,8 +29,13 @@ final class AppStore: ObservableObject {
     @Published var expenses: [ExpenseRecord] = []
     @Published var documents: [VehicleDocument] = []
     @Published var posts: [CommunityPost] = []
-    @Published private(set) var communityNotifications: [CommunityNotification] = []
+    @Published private(set) var communityNotifications: [CommunityNotification] = [] {
+        didSet { updateNotificationBadge() }
+    }
     @Published private(set) var communityNotificationError: String?
+    @Published private(set) var publishConfirmations: [PublishConfirmation] = [] {
+        didSet { updateNotificationBadge() }
+    }
     @Published var isAuthenticated = false
     @Published var biometricEnabled = false
     @Published private(set) var biometricUnlocked = false
@@ -123,6 +128,9 @@ final class AppStore: ObservableObject {
     var unreadCommunityNotificationCount: Int {
         communityNotifications.lazy.filter { !$0.isRead }.count
     }
+    var unreadNotificationCount: Int {
+        unreadCommunityNotificationCount + publishConfirmations.filter { !$0.isRead }.count
+    }
 
     init(dependencies: AppDependencies) {
         self.dependencies = dependencies
@@ -130,6 +138,7 @@ final class AppStore: ObservableObject {
             isRestoringSession = true
         } else {
             load()
+            loadPublishConfirmations()
         }
         // Apply the black redesign to existing installations once. Later user
         // choices in Appearance remain intact across launches.
@@ -187,6 +196,7 @@ final class AppStore: ObservableObject {
     func retryCloudSync() {
         backendError = nil
         guard isAuthenticated else { return }
+        refreshCommunityNotifications()
         persist()
     }
 
@@ -271,23 +281,7 @@ final class AppStore: ObservableObject {
                     }
                 }
             }
-            communityNotificationsListener = dependencies.remote.observeCommunityNotifications(
-                userID: user.id
-            ) { [weak self] result in
-                Task { @MainActor in
-                    guard let self, self.activeUserID == user.id else { return }
-                    switch result {
-                    case .success(let notifications):
-                        self.communityNotifications = notifications
-                        self.communityNotificationError = nil
-                    case .failure:
-                        // Community alerts are optional and must not block the garage UI when
-                        // notification rules have not been deployed yet.
-                        self.communityNotificationError =
-                            "Community notifications are temporarily unavailable."
-                    }
-                }
-            }
+            refreshCommunityNotifications()
         }
 
         guard let user else {
@@ -309,6 +303,7 @@ final class AppStore: ObservableObject {
             apply(state)
         }
         isAuthenticated = true
+        loadPublishConfirmations()
         publishWidgetSnapshot()
         garageListener = dependencies.remote.observeGarage(userID: user.id) { [weak self] result in
             Task { @MainActor in
@@ -349,6 +344,7 @@ final class AppStore: ObservableObject {
         documents = []
         posts = []
         communityNotifications = []
+        publishConfirmations = []
         communityNotificationError = nil
         savedMarketplaceItemIDs = []
         localCommentsByPostID = [:]
@@ -495,6 +491,7 @@ final class AppStore: ObservableObject {
         userEmail = "demo@local"
         onboardingCompleted = false
         isAuthenticated = true
+        loadPublishConfirmations()
         refreshPhotos()
         persist()
     }
@@ -514,10 +511,11 @@ final class AppStore: ObservableObject {
     }
 
     func signOut() async throws {
+        guard !isSigningOut else { return }
+        isSigningOut = true
+        defer { isSigningOut = false }
         commitPendingUndo()
-        lockBiometricSession()
         if isFirebaseConfigured {
-            isSigningOut = true
             await pushLifecycleTask?.value
             await pushRegistrationSaveTask?.value
             if let userID = activeUserID,
@@ -536,11 +534,12 @@ final class AppStore: ObservableObject {
             pushRegistrationError = nil
             isPushRegistered = false
             pushInstallationID = nil
-            defer { isSigningOut = false }
             try dependencies.authentication.signOut()
             handleAuthChange(nil)
         } else {
             isAuthenticated = false
+            lockBiometricSession()
+            publishConfirmations = []
             profilePhoto = nil
             vehiclePhotos = [:]
             expenseReceiptPhotos = [:]
@@ -817,6 +816,8 @@ final class AppStore: ObservableObject {
         var listing = item
         listing.sellerID = userID
         try await dependencies.remote.publishListing(listing, userID: userID)
+        guard activeUserID == userID, !isSigningOut else { return }
+        recordPublishConfirmation(kind: .listing, itemID: listing.id, preview: listing.title)
     }
 
     func canDeleteListing(_ item: MarketplaceItem) -> Bool {
@@ -1027,18 +1028,31 @@ final class AppStore: ObservableObject {
 
     func addMaintenance(_ record: MaintenanceRecord) {
         maintenance.insert(record, at: 0)
-        updateVehicleMileage(vehicleID: record.vehicleID, reading: record.mileage)
         if let index = vehicles.firstIndex(where: { $0.id == record.vehicleID }) {
-            let distance = vehicles[index].serviceMileageInterval ?? 5_000
-            let months = vehicles[index].serviceMonthInterval ?? 6
-            vehicles[index].nextServiceMileage = record.mileage + distance
-            vehicles[index].nextServiceDate = record.nextReminder
-                ?? Calendar.current.date(byAdding: .month, value: months, to: record.date)
-                ?? record.date
+            if record.status == "Scheduled" {
+                // A future booking must not change the vehicle's current odometer.
+                // It becomes the upcoming service shown on the dashboard instead.
+                vehicles[index].nextServiceMileage = max(
+                    vehicles[index].mileage,
+                    record.nextServiceMileage ?? record.mileage
+                )
+                vehicles[index].nextServiceDate = record.date
+            } else {
+                updateVehicleMileage(vehicleID: record.vehicleID, reading: record.mileage)
+                let distance = vehicles[index].serviceMileageInterval ?? 5_000
+                let months = vehicles[index].serviceMonthInterval ?? 6
+                vehicles[index].nextServiceMileage = record.nextServiceMileage
+                    ?? (record.mileage + distance)
+                vehicles[index].nextServiceDate = record.nextReminder
+                    ?? Calendar.current.date(byAdding: .month, value: months, to: record.date)
+                    ?? record.date
+            }
         }
         persist()
         refreshLocalReminders()
-        showSuccess = "Maintenance saved"
+        showSuccess = record.status == "Scheduled"
+            ? "Future maintenance scheduled"
+            : "Maintenance saved"
     }
     func addFuel(_ record: FuelRecord) {
         let previousMileage = vehicles.first(where: { $0.id == record.vehicleID })?.mileage ?? 0
@@ -1253,6 +1267,7 @@ final class AppStore: ObservableObject {
         if isFirebaseConfigured {
             guard let userID = activeUserID else { return }
             let shouldLike = !post.isLiked
+            let actorName = userName
             pendingLikePostIDs.insert(post.id)
             if let index = posts.firstIndex(where: { $0.id == post.id }) {
                 posts[index].isLiked = shouldLike
@@ -1260,25 +1275,17 @@ final class AppStore: ObservableObject {
             }
             Task { [weak self, remote = dependencies.remote] in
                 do {
-                    try await remote.setPostLiked(shouldLike, postID: post.id, userID: userID)
-                    if shouldLike, let recipientID = post.authorID, recipientID != userID {
-                        let notification = CommunityNotification(
-                            id: "like.\(post.id.uuidString).\(userID)",
-                            type: "like", actorName: self?.userName ?? "A driver",
-                            postID: post.id, postPreview: post.text,
-                            createdAt: Date(), isRead: false)
-                        try? await remote.publishCommunityNotification(
-                            notification, recipientID: recipientID, actorID: userID)
-                    }
+                    try await remote.setPostLiked(
+                        shouldLike, postID: post.id, userID: userID, actorName: actorName)
                 } catch {
-                    guard let self else { return }
+                    guard let self, self.activeUserID == userID else { return }
                     if let index = self.posts.firstIndex(where: { $0.id == post.id }) {
                         self.posts[index].isLiked = post.isLiked
                         self.posts[index].likes = post.likes
                     }
                     self.backendError = error.localizedDescription
                 }
-                self?.pendingLikePostIDs.remove(post.id)
+                if self?.activeUserID == userID { self?.pendingLikePostIDs.remove(post.id) }
             }
             return
         }
@@ -1295,6 +1302,8 @@ final class AppStore: ObservableObject {
             var publishedPost = post
             publishedPost.authorID = userID
             try await dependencies.remote.publishPost(publishedPost, userID: userID)
+            guard activeUserID == userID, !isSigningOut else { return }
+            recordPublishConfirmation(kind: .post, itemID: post.id, preview: post.text)
             showSuccess = "Post published"
             return
         }
@@ -1302,6 +1311,7 @@ final class AppStore: ObservableObject {
         localPost.authorID = "local-demo"
         posts.insert(localPost, at: 0)
         persist()
+        recordPublishConfirmation(kind: .post, itemID: post.id, preview: post.text)
         showSuccess = "Post published"
     }
 
@@ -1342,16 +1352,6 @@ final class AppStore: ObservableObject {
         comment.createdAt = comment.createdAt ?? Date()
         if isFirebaseConfigured {
             try await dependencies.remote.publishComment(comment, postID: postID, userID: userID)
-            if let post = posts.first(where: { $0.id == postID }),
-                let recipientID = post.authorID, recipientID != userID
-            {
-                let notification = CommunityNotification(
-                    id: "comment.\(comment.id.uuidString)", type: "comment",
-                    actorName: userName, postID: postID, postPreview: post.text,
-                    createdAt: Date(), isRead: false)
-                try? await dependencies.remote.publishCommunityNotification(
-                    notification, recipientID: recipientID, actorID: userID)
-            }
         } else {
             localCommentsByPostID[postID, default: []].append(comment)
             if let index = posts.firstIndex(where: { $0.id == postID }) {
@@ -1365,6 +1365,60 @@ final class AppStore: ObservableObject {
         localCommentsByPostID[postID] ?? []
     }
 
+    func refreshCommunityNotifications() {
+        communityNotificationsListener?.cancel()
+        communityNotificationsListener = nil
+        guard isFirebaseConfigured, let userID = activeUserID else { return }
+        communityNotificationError = nil
+        communityNotificationsListener = dependencies.remote.observeCommunityNotifications(
+            userID: userID
+        ) { [weak self] result in
+            Task { @MainActor in
+                guard let self, self.activeUserID == userID else { return }
+                switch result {
+                case .success(let notifications):
+                    self.communityNotifications = notifications
+                    self.communityNotificationError = nil
+                case .failure(let error):
+                    self.communityNotificationError =
+                        "Could not load community notifications. \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    private func loadPublishConfirmations() {
+        guard let userID = currentUserID, isAuthenticated else { return }
+        publishConfirmations = dependencies.local.data(forKey: "publish-confirmations-\(userID)")
+            .flatMap { try? JSONDecoder().decode([PublishConfirmation].self, from: $0) } ?? []
+    }
+
+    private func savePublishConfirmations() {
+        guard let userID = currentUserID,
+            let data = try? JSONEncoder().encode(publishConfirmations) else { return }
+        dependencies.local.set(data, forKey: "publish-confirmations-\(userID)")
+    }
+
+    private func recordPublishConfirmation(
+        kind: PublishConfirmation.Kind, itemID: UUID, preview: String
+    ) {
+        guard isAuthenticated, !isSigningOut else { return }
+        let id = "\(kind.rawValue)-\(itemID.uuidString)"
+        guard !publishConfirmations.contains(where: { $0.id == id }) else { return }
+        publishConfirmations.insert(PublishConfirmation(
+            id: id, kind: kind, itemID: itemID, preview: String(preview.prefix(160)),
+            createdAt: Date()), at: 0)
+        publishConfirmations = Array(publishConfirmations.prefix(100))
+        savePublishConfirmations()
+    }
+
+    func markPublishConfirmationRead(_ confirmation: PublishConfirmation) {
+        guard let index = publishConfirmations.firstIndex(where: { $0.id == confirmation.id })
+        else { return }
+        publishConfirmations[index].isRead = true
+        savePublishConfirmations()
+    }
+
     func markCommunityNotificationRead(_ notification: CommunityNotification) {
         guard !notification.isRead else { return }
         if let index = communityNotifications.firstIndex(where: { $0.id == notification.id }) {
@@ -1376,7 +1430,13 @@ final class AppStore: ObservableObject {
                 try await remote.markCommunityNotificationRead(
                     id: notification.id, userID: userID)
             } catch {
-                self?.backendError = error.localizedDescription
+                guard let self, self.activeUserID == userID else { return }
+                if let index = self.communityNotifications.firstIndex(where: {
+                    $0.id == notification.id
+                }) {
+                    self.communityNotifications[index].isRead = false
+                }
+                self.backendError = error.localizedDescription
             }
         }
     }
@@ -1423,6 +1483,10 @@ final class AppStore: ObservableObject {
     func unlockWithDeviceAuthentication(
         completion: @escaping (Result<Void, DeviceAuthenticationFailure>) -> Void
     ) {
+        guard isAuthenticated, !isSigningOut, biometricEnabled else {
+            completion(.failure(.interrupted))
+            return
+        }
         evaluateDeviceAuthentication(
             requiresBiometrics: false,
             reason: "Unlock your vehicle information",
@@ -1433,12 +1497,17 @@ final class AppStore: ObservableObject {
         requiresBiometrics: Bool, reason: String,
         completion: @escaping (Result<Void, DeviceAuthenticationFailure>) -> Void
     ) {
+        guard isAuthenticated, !isSigningOut else {
+            completion(.failure(.interrupted))
+            return
+        }
         let generation = biometricLockGeneration
         dependencies.deviceAuthentication.evaluate(
             requiresBiometrics: requiresBiometrics, reason: reason
         ) { success, error in
             Task { @MainActor in
-                guard generation == self.biometricLockGeneration else {
+                guard generation == self.biometricLockGeneration,
+                    self.isAuthenticated, !self.isSigningOut else {
                     completion(.failure(.interrupted))
                     return
                 }
@@ -1490,6 +1559,7 @@ final class AppStore: ObservableObject {
 
     func notificationPreferencesChanged() {
         persist()
+        updateNotificationBadge()
         refreshLocalReminders()
         reconcilePushRegistration()
     }
@@ -1523,7 +1593,12 @@ final class AppStore: ObservableObject {
         }
         if vehicleNotifications {
             reminders += vehicles.compactMap { vehicle in
-                guard vehicle.nextServiceDate > now else { return nil }
+                let hasScheduledService = maintenance.contains {
+                    $0.vehicleID == vehicle.id
+                        && $0.status == "Scheduled"
+                        && $0.date > now
+                }
+                guard vehicle.nextServiceDate > now, !hasScheduledService else { return nil }
                 return ScheduledReminder(
                     id: "vehicle.\(vehicle.id.uuidString)", title: "Vehicle service due",
                     body: "\(vehicle.title) is due for service.", date: vehicle.nextServiceDate)
@@ -1537,6 +1612,7 @@ final class AppStore: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.notificationPermissionState = state
+                self.updateNotificationBadge()
                 self.refreshLocalReminders()
                 self.reconcilePushRegistration()
             }
@@ -1549,11 +1625,35 @@ final class AppStore: ObservableObject {
         dependencies.notificationPermissions.request { [weak self] state in
             Task { @MainActor in
                 self?.notificationPermissionState = state
+                self?.updateNotificationBadge()
                 self?.refreshLocalReminders()
                 self?.reconcilePushRegistration()
                 completion(state)
             }
         }
+    }
+
+    private func updateNotificationBadge() {
+        let count = isAuthenticated && notificationsEnabled ? unreadNotificationCount : 0
+        dependencies.notificationPermissions.setBadgeCount(count)
+        presentUnreadCommunityAlert()
+    }
+
+    private func presentUnreadCommunityAlert() {
+        guard let userID = activeUserID, isAuthenticated, !isSigningOut, notificationsEnabled,
+            notificationPermissionState.allowsAlerts,
+            UIApplication.shared.applicationState == .active else { return }
+        let key = "smart-vehicle-announced-notifications-\(userID)"
+        let announced = dependencies.local.data(forKey: key)
+            .flatMap { try? JSONDecoder().decode(Set<String>.self, from: $0) } ?? []
+        let pending = communityNotifications.filter { !$0.isRead && !announced.contains($0.id) }
+        guard let latest = pending.max(by: { $0.createdAt < $1.createdAt }) else { return }
+        // Show only the latest missed activity instead of flooding the user on sign-in.
+        let ids = announced.union(communityNotifications.map(\.id))
+        if let data = try? JSONEncoder().encode(ids) {
+            dependencies.local.set(data, forKey: key)
+        }
+        dependencies.notificationPermissions.presentCommunityAlert(latest, userID: userID)
     }
 
     private func seed() {
@@ -1674,12 +1774,14 @@ enum BackendError: LocalizedError {
     case appleTokenMissing
     case notOwner
     case authenticationUnavailable
+    case postUnavailable
 
     var errorDescription: String? {
         switch self {
         case .signInRequired: "Sign in before posting a listing."
         case .appleTokenMissing: "Apple sign-in did not return an identity token. Try again."
         case .notOwner: "Only the person who published this item can edit or delete it."
+        case .postUnavailable: "This community post is no longer available."
         case .authenticationUnavailable:
             "Account services are unavailable because Firebase is not configured."
         }
