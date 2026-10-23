@@ -1,85 +1,104 @@
-# Smart Vehicle Maintenance App
+# Smart Garage
 
-This is an iOS application made for managing personal vehicle information. It was built with SwiftUI as a coursework project.
+Smart Garage is my iOS coursework project built with SwiftUI. It helps users manage vehicles, maintenance, fuel, expenses and documents. It also includes community posts, a marketplace, nearby services, analytics and PDF reports.
 
-The main purpose of the app is to keep vehicle details, maintenance records, expenses and documents in one place. It also has a small marketplace and community section for vehicle owners.
-
-## Main features
-
-- Add and manage vehicles
-- Save maintenance and fuel records
-- Track vehicle expenses
-- Store document details and scan documents
-- View spending charts and reports
-- Maintenance and document reminders
-- Marketplace and community posts
-- Nearby vehicle-related locations
-- Home screen widget
-- Firebase email and Google sign-in
+The app supports iPhone and iPad.
 
 ## Requirements
 
-- Xcode 26.2 or newer
+- A Mac with Xcode 26.2 or newer
 - iOS 17 or newer
-- A Firebase project for online features
+- An internet connection
+- The Firebase configuration file supplied privately for marking
 
-## Running the project
+## How to Run the App
 
-1. Open `SmartVehicle.xcodeproj` in Xcode.
-2. Select the `SmartVehicle` scheme.
-3. Choose an iPhone simulator or a connected device.
-4. Press Run.
+1. Clone the repository:
 
-The widget is included as a separate target. Running it on a physical device requires the same Apple Developer team and App Group to be selected for both targets.
+   ```bash
+   git clone https://github.com/sandarumapple/NewSmartVehicleApp.git
+   cd NewSmartVehicleApp
+   ```
 
-## Firebase setup
+2. Copy the privately supplied `GoogleService-Info.plist` file into the `SmartVehicleApp` folder.
 
-The local `GoogleService-Info.plist` file is not included in Git. To use Firebase, download this file from the Firebase Console and place it inside the `SmartVehicleApp` folder.
+3. Open `SmartVehicle.xcodeproj` in Xcode.
 
-Firebase Authentication and Firestore are used for accounts and shared data. The Firestore rules and indexes used by the project are included in:
+4. Wait for Xcode to download the package dependencies.
 
-- `firestore.rules`
-- `firestore.indexes.json`
-- `firebase.json`
+5. Select the `SmartVehicle` scheme and an iPhone or iPad simulator.
 
-If Firebase is not configured, the app can still be opened with local demo data.
+6. Press `Command + R` to build and run.
 
-## Community notifications
+To run on a physical device, select your Apple Developer team under Signing & Capabilities. The app and widget targets need matching App Group settings.
 
-Likes and comments save an inbox notification for the post's owner in the same
-Firestore batch. Reactions to your own posts do not notify you. The dashboard
-bell shows the unread count; opening a notification marks it as read. Marketplace
-hearts remain private saved listings and do not notify sellers.
+Without the Firebase configuration file, local demo mode is available. Demo mode does not connect to the Firebase backend.
 
-When notification permission is allowed, the app presents the latest unread
-community activity when it receives it while active, including after sign-in.
-Already announced events are remembered separately for each account.
+## Backend Access for Markers
 
-Background remote delivery additionally requires the function in `functions/index.js`
-to be deployed on a Firebase Blaze project, an APNs key configured in Firebase
-Cloud Messaging, and the Push Notifications capability enabled for the app.
-Inbox delivery does not require a Cloud Function or APNs.
+The app uses Firebase Authentication for accounts and Cloud Firestore for online data. There is no separate server to start. The Firebase configuration file connects the app to the correct backend.
 
-To test the Firestore notification rules without real accounts or production data,
-install Firebase CLI and Java 21 or newer, then run from the project directory:
+I will provide these through the university's private submission channel:
 
-```sh
+- `GoogleService-Info.plist`
+- A test account email and password
+- A second test account for checking community interactions
+
+These details are not stored in this public repository. If they are missing, please contact me through the university submission system.
+
+### Checking the Backend
+
+1. Run the app with the supplied Firebase configuration.
+2. Sign in using the test account.
+3. Add a vehicle and a fuel, maintenance or expense record.
+4. Sign out and sign back in to check that the saved data loads.
+
+To check community notifications:
+
+1. Create a post using the first account.
+2. Sign in using the second account and like or comment on that post.
+3. Sign back into the first account and open the notification inbox.
+
+Markers can use the backend through the app without Firebase Console access. Firestore rules restrict private records to their owner.
+
+The repository includes `firestore.rules`, `firestore.indexes.json` and `firebase.json` for reviewing the backend configuration.
+
+## Notifications and Device Features
+
+Community likes and comments create in-app notifications. Marketplace hearts are private bookmarks and do not notify the seller.
+
+Background push delivery needs additional Cloud Functions and Apple push notification configuration. It is not enabled in the current marking setup.
+
+Document camera scanning requires a supported physical device. Document photos can be imported in the simulator. Face ID requires a compatible device or an enrolled simulator biometric setup.
+
+## Running Tests
+
+1. Select the `SmartVehicle` scheme and a simulator in Xcode.
+2. Press `Command + U` to run the tests.
+3. Press `Command + 6` to view the Test Navigator.
+
+There are 16 Swift Testing unit tests covering:
+
+- Authentication validation
+- Analytics calculations
+- Vehicle model logic
+- Marketplace data handling
+- Community search and filtering
+
+All 16 passed in the verified iPhone 17 simulator test run.
+
+There are also six Firestore Emulator tests for notification behaviour and access rules. These run locally without changing production data.
+
+With Node.js 20, Firebase CLI and Java 21 or newer installed, run:
+
+```bash
 firebase emulators:exec --only firestore --project demo-smartvehicle 'node --test functions/tests/community-notifications.test.js'
 ```
 
-The tests cover cross-account likes and comments, unlike/re-like, read permissions,
-forged notifications, and rollback when one write in a batch fails.
+## Security
 
-## Project folders
+Do not commit passwords, API keys, tokens or service-account credentials.
 
-- `SmartVehicleApp/Models` - data models
-- `SmartVehicleApp/ViewModels` - view-related calculations and validation
-- `SmartVehicleApp/Services` - app data, Firebase and iOS services
-- `SmartVehicleApp/Views` - SwiftUI screens
-- `SmartVehicleWidget` - home screen widget
+The Firebase configuration file and local Firebase logs are excluded through `.gitignore`. Test credentials and configuration are shared privately for marking.
 
-## Notes
-
-Some device features such as Face ID, notifications, document scanning and widgets may work differently in the simulator. A physical device and the correct Apple capabilities are needed to test all of them.
-
-The app stores a local copy of vehicle data and synchronizes it with Firestore when Firebase is available.
+Firestore security rules control access to backend data.
